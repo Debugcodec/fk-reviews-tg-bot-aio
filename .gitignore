@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.db
+*.jpg
+*.jpeg
+*.png
+temp_review_snap.png
+
