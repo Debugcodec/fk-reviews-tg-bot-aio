@@ -34,6 +34,7 @@ A multi-purpose Python Telegram bot designed to fetch, paginate, and search prod
 ```
 3. Set up environment variables:
 ```bash
+cd fk-reviews-tg-bot-aio
  cp .env.example .env
 ```
 ## ⚙️ Environment Variables
