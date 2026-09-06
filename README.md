@@ -26,7 +26,7 @@ A multi-purpose Python Telegram bot designed to fetch, paginate, and search prod
 **## 🚀 Setup & Installation**
 1. Clone the repository:
  ```bash
- git clone https://github.com/Debugcodec/fk-reviews-telegram-bot.git
+ git clone https://github.com/Debugcodec/fk-reviews-tg-bot-aio.git
 ```
 2. Install Python dependencies:
 ```bash
