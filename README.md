@@ -36,6 +36,7 @@ A multi-purpose Python Telegram bot designed to fetch, paginate, and search prod
 ```bash
 cd fk-reviews-tg-bot-aio
  cp .env.example .env
+
 ```
 ## ⚙️ Environment Variables
 
