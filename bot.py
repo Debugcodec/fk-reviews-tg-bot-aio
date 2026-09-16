@@ -159,52 +159,80 @@ def fast_compress(input_path, target_kb):
     pass
 
 
-async def upload_screenshot_to_drive(image_bytes: bytes, filename: str) -> str:
-  temp_path = os.path.join(os.path.expanduser("~"), filename)
-  target_remote_file = f"{REMOTE_NAME}:{REMOTE_FOLDER}/{filename}"
-  folder_url = f"https://drive.google.com/drive/folders/{REMOTE_FOLDER_ID}"
+async def upload_screenshot_to_drive(image_bytes: bytes) -> str:
+    filename = f"review_{uuid.uuid4().hex[:10]}.jpg"
+    temp_path = os.path.join(os.path.expanduser("~"), filename)
+    target_remote_file = f"{REMOTE_NAME}:{REMOTE_FOLDER}/{filename}"
 
-  try:
-    with open(temp_path, "wb") as f:
-      f.write(image_bytes)
-      f.flush()
-      os.fsync(f.fileno())
+    try:
+        # 1. Write file locally
+        with open(temp_path, "wb") as f:
+            f.write(image_bytes)
+            f.flush()
+            os.fsync(f.fileno())
 
-    proc = await asyncio.create_subprocess_exec(
-        "rclone",
-        "copyto",
-        temp_path,
-        target_remote_file,
-        "--quiet",
-        "--ignore-checksum",
-        "--drive-chunk-size",
-        "32M",
-    )
-    await proc.communicate()
+        # Optional compression if you use fast_compress
+        try:
+            fast_compress(temp_path, 300)
+        except Exception:
+            pass
 
-    link_proc = await asyncio.create_subprocess_exec(
-        "rclone",
-        "link",
-        target_remote_file,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    stdout, _ = await asyncio.wait_for(link_proc.communicate(), timeout=6)
-    direct_link = stdout.decode().strip()
+        # 2. Upload file via rclone
+        proc = await asyncio.create_subprocess_exec(
+            "rclone",
+            "copyto",
+            temp_path,
+            target_remote_file,
+            "--quiet",
+            "--ignore-checksum",
+            "--drive-chunk-size",
+            "32M",
+        )
+        await proc.communicate()
 
-    if direct_link and direct_link.startswith("http"):
-      return direct_link
+        # 3. Retry rclone link (give Google Drive 1-2s to register permissions)
+        for attempt in range(3):
+            await asyncio.sleep(1.5)
+            link_proc = await asyncio.create_subprocess_exec(
+                "rclone",
+                "link",
+                target_remote_file,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await link_proc.communicate()
+            link = stdout.decode().strip()
 
-    return folder_url
-  except Exception as e:
-    print(f"⚠️ Screenshot upload notice: {e}")
-    return folder_url
-  finally:
-    if os.path.exists(temp_path):
-      try:
-        os.remove(temp_path)
-      except Exception:
-        pass
+            # Ensure it returned a valid file URL, not a folder URL
+            if link.startswith("http") and "/folders/" not in link:
+                return link
+
+        # 4. Fallback: Fetch exact file ID directly using rclone lsjson
+        ls_proc = await asyncio.create_subprocess_exec(
+            "rclone",
+            "lsjson",
+            target_remote_file,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await ls_proc.communicate()
+        items = json.loads(stdout.decode().strip() or "[]")
+        if items and "ID" in items[0]:
+            return f"https://drive.google.com/open?id={items[0]['ID']}"
+
+    except Exception as e:
+        print(f"❌ Error uploading/getting link: {e}")
+    finally:
+        # Clean up local temporary file
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
+
+    # Fallback to direct search by exact filename rather than opening the whole folder
+    return f"https://drive.google.com/drive/search?q={filename}"
+    
 
 
 async def upload_worker(
