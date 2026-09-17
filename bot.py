@@ -159,8 +159,12 @@ def fast_compress(input_path, target_kb):
     pass
 
 
-async def upload_screenshot_to_drive(image_bytes: bytes) -> str:
-    filename = f"review_{uuid.uuid4().hex[:10]}.jpg"
+async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -> str:
+    if not filename:
+        filename = f"review_{uuid.uuid4().hex[:10]}.jpg"
+    elif not filename.endswith(".jpg") and not filename.endswith(".png"):
+        filename = f"{filename}.jpg"
+
     temp_path = os.path.join(os.path.expanduser("~"), filename)
     target_remote_file = f"{REMOTE_NAME}:{REMOTE_FOLDER}/{filename}"
 
@@ -171,7 +175,6 @@ async def upload_screenshot_to_drive(image_bytes: bytes) -> str:
             f.flush()
             os.fsync(f.fileno())
 
-        # Optional compression if you use fast_compress
         try:
             fast_compress(temp_path, 300)
         except Exception:
@@ -190,7 +193,7 @@ async def upload_screenshot_to_drive(image_bytes: bytes) -> str:
         )
         await proc.communicate()
 
-        # 3. Retry rclone link (give Google Drive 1-2s to register permissions)
+        # 3. Retry rclone link to allow Drive permissions to register
         for attempt in range(3):
             await asyncio.sleep(1.5)
             link_proc = await asyncio.create_subprocess_exec(
@@ -203,7 +206,6 @@ async def upload_screenshot_to_drive(image_bytes: bytes) -> str:
             stdout, _ = await link_proc.communicate()
             link = stdout.decode().strip()
 
-            # Ensure it returned a valid file URL, not a folder URL
             if link.startswith("http") and "/folders/" not in link:
                 return link
 
@@ -223,17 +225,14 @@ async def upload_screenshot_to_drive(image_bytes: bytes) -> str:
     except Exception as e:
         print(f"❌ Error uploading/getting link: {e}")
     finally:
-        # Clean up local temporary file
         if os.path.exists(temp_path):
             try:
                 os.remove(temp_path)
             except OSError:
                 pass
 
-    # Fallback to direct search by exact filename rather than opening the whole folder
     return f"https://drive.google.com/drive/search?q={filename}"
-    
-
+            
 
 async def upload_worker(
     file_path,
