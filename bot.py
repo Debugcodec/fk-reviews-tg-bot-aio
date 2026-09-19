@@ -209,7 +209,7 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
             if link.startswith("http") and "/folders/" not in link:
                 return link
 
-        # 4. Fallback: Fetch exact file ID directly using rclone lsjson
+       # 4. Fallback: Fetch exact file ID directly using rclone lsjson
         ls_proc = await asyncio.create_subprocess_exec(
             "rclone",
             "lsjson",
@@ -218,21 +218,17 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await ls_proc.communicate()
-        items = json.loads(stdout.decode().strip() or "[]")
-        if items and "ID" in items[0]:
-            return f"https://drive.google.com/open?id={items[0]['ID']}"
-
-    except Exception as e:
-        print(f"❌ Error uploading/getting link: {e}")
-    finally:
-        if os.path.exists(temp_path):
+        raw_output = stdout.decode().strip()
+        
+        # Only parse if output looks like a valid JSON array
+        if raw_output.startswith("["):
             try:
-                os.remove(temp_path)
-            except OSError:
+                items = json.loads(raw_output)
+                if items and "ID" in items[0]:
+                    return f"https://drive.google.com/open?id={items[0]['ID']}"
+            except Exception:
                 pass
-
-    return f"https://drive.google.com/drive/search?q={filename}"
-            
+                
 
 async def upload_worker(
     file_path,
