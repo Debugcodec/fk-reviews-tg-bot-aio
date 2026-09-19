@@ -220,7 +220,7 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
         stdout, _ = await ls_proc.communicate()
         raw_output = stdout.decode().strip()
         
-        # Only parse if output looks like a valid JSON array
+              # Only parse if output looks like a valid JSON array
         if raw_output.startswith("["):
             try:
                 items = json.loads(raw_output)
@@ -228,6 +228,11 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
                     return f"https://drive.google.com/open?id={items[0]['ID']}"
             except Exception:
                 pass
+
+    except Exception as e:
+        print(f"❌ Error uploading/getting link: {e}")
+
+    return f"https://drive.google.com/drive/search?q={filename}" 
                 
 
 async def upload_worker(
