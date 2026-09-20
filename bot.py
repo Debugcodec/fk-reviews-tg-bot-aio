@@ -941,7 +941,11 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
   query = update.callback_query
-  await query.answer()
+  try:
+    await query.answer()
+except Exception:
+    pass
+
   data = query.data
 
   if data.startswith("snap_"):
@@ -1185,4 +1189,7 @@ if __name__ == "__main__":
   app.add_handler(CallbackQueryHandler(button_callback))
 
   print("🚀 Bot Active (SQLite Local Cache + Instant DB Search)")
-  app.run_polling()
+  if __name__ == "__main__":
+    # ...
+    app.run_polling(drop_pending_updates=True)
+      
