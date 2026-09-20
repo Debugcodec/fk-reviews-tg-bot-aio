@@ -1056,7 +1056,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
-except Exception as e:
+        except Exception as e:
     if "Message is not modified" not in str(e):
         print(f"Edit message error: {e}")
         
