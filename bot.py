@@ -1198,8 +1198,8 @@ if __name__ == "__main__":
     )
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_messages))
+    app.add_handler(MessageHandler(filters.PHOTO, filters.Document.IMAGE, handle_media))
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_error_handler(global_error_handler)
 
