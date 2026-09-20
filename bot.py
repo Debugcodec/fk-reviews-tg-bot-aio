@@ -1050,7 +1050,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         total_cached=total_count,
     )
     try:
-    await query.edit_message_text(
+        await query.edit_message_text(
         msg_text,
         reply_markup=reply_markup,
         parse_mode=ParseMode.HTML,
