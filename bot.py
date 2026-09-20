@@ -1049,12 +1049,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         converted_info=converted_info,
         total_cached=total_count,
     )
+    try:
     await query.edit_message_text(
         msg_text,
         reply_markup=reply_markup,
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
+except Exception as e:
+    if "Message is not modified" not in str(e):
+        print(f"Edit message error: {e}")
+        
     return
 
   data_parts = data.split("_")
