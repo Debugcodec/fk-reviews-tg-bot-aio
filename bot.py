@@ -941,7 +941,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
   query = update.callback_query
-      try:
+      try:    
           await query.answer()
       except Exception:
           pass
