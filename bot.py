@@ -1172,30 +1172,39 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
       )
   )
 
-
-# ==========================================
+# =======================================================
 # APP STARTUP
-# ==========================================
+# =======================================================
+from telegram.error import BadRequest
+
+async def global_error_handler(update, context):
+    if isinstance(context.error, BadRequest):
+        err_msg = str(context.error)
+        if "Message is not modified" in err_msg or "Query is too old" in err_msg:
+            return
+    print(f"⚠️ Unhandled error: {context.error}")
+
 if __name__ == "__main__":
-  init_db()
+    init_db()
 
-  app = (
-      ApplicationBuilder()
-      .token(BOT_TOKEN)
-      .connect_timeout(30.0)
-      .read_timeout(30.0)
-      .write_timeout(30.0)
-      .pool_timeout(30.0)
-      .build()
-  )
+    app = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
+        .build()
+    )
 
-  app.add_handler(CommandHandler("start", start))
-  app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_text_messages))
-  app.add_handler(MessageHandler(filters.PHOTO | filters.Document.IMAGE, handle_media))
-  app.add_handler(CallbackQueryHandler(button_callback))
+    app.add_handler(CommandHandler("start", ...))
+    app.add_handler(MessageHandler(filters.TEXT, ...))
+    app.add_handler(MessageHandler(filters.PHOTO, ...))
+    app.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Register global error handler here:
+    app.add_error_handler(global_error_handler)
 
-  print("🚀 Bot Active (SQLite Local Cache + Instant DB Search)")
-  if __name__ == "__main__":
-    # ...
+    print("🚀 Bot Active (SQLite Local Cache)...")
     app.run_polling(drop_pending_updates=True)
-      
+    
