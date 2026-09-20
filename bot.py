@@ -1197,12 +1197,10 @@ if __name__ == "__main__":
         .build()
     )
 
-    app.add_handler(CommandHandler("start", ...))
-    app.add_handler(MessageHandler(filters.TEXT, ...))
-    app.add_handler(MessageHandler(filters.PHOTO, ...))
+    app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(CallbackQueryHandler(button_callback))
-    
-    # Register global error handler here:
     app.add_error_handler(global_error_handler)
 
     print("🚀 Bot Active (SQLite Local Cache)...")
