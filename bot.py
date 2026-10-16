@@ -501,7 +501,7 @@ def fetch_flipkart_reviews(
                 f"https://www.flipkart.com{raw_href}" if not raw_href.startswith("http") else raw_href
             )
         else:
-            review_link = f"https://www.flipkart.com/reviews/{pid}:{len(seen_ids)+1}?reviewId={r_id}"
+            review_link = f"https://www.flipkart.com/product/product-reviews/item?pid={pid}&reviewId={r_id}"
 
         rating_elem = card.find("div", class_=re.compile(r"XDXgAE|_3LWZlK|_1BLPMq"))
         title_elem = card.find("p", class_=re.compile(r"z9E0IG|_2-N8zT"))
@@ -566,10 +566,7 @@ def fetch_flipkart_reviews(
                     and r_id not in seen_ids
                 ):
                     seen_ids.add(r_id)
-                    raw_url = (
-                        node.get("url")
-                        or node.get("reviewUrl")
-                        or f"/reviews/{pid}:1?reviewId={r_id}"
+                    full_permalink = f"https://www.flipkart.com/product/product-reviews/item?pid={pid}&reviewId={r_id}"
                     )
                     full_permalink = (
                         f"https://www.flipkart.com{raw_url}" if not raw_url.startswith("http") else raw_url
