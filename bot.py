@@ -168,6 +168,7 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
     target_remote_file = f"{REMOTE_NAME}:{REMOTE_FOLDER}/{filename}"
 
     try:
+        # 1. Write file locally
         with open(temp_path, "wb") as f:
             f.write(image_bytes)
             f.flush()
@@ -178,6 +179,7 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
         except Exception:
             pass
 
+        # 2. Upload to Google Drive via rclone
         proc = await asyncio.create_subprocess_exec(
             "rclone",
             "copyto",
@@ -190,44 +192,56 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
         )
         await proc.communicate()
 
-        for _ in range(3):
-            await asyncio.sleep(1.5)
-            link_proc = await asyncio.create_subprocess_exec(
+        # 3. Clean up local temp file
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+        # 4. Fetch the exact Google Drive File ID using 'rclone lsf --format i'
+        for attempt in range(4):
+            await asyncio.sleep(1.5)  # Allow Drive time to register the file ID
+            id_proc = await asyncio.create_subprocess_exec(
                 "rclone",
-                "link",
+                "lsf",
+                "--format",
+                "i",
                 target_remote_file,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, _ = await link_proc.communicate()
-            link = stdout.decode().strip()
+            stdout, _ = await id_proc.communicate()
+            file_id = stdout.decode().strip()
 
-            if link.startswith("http") and "/folders/" not in link:
-                return link
+            if file_id and len(file_id) > 15:
+                # Returns the exact format: https://drive.google.com/open?id=<FILE_ID>
+                return f"https://drive.google.com/open?id={file_id}"
 
-        ls_proc = await asyncio.create_subprocess_exec(
+        # 5. Secondary fallback: check parent directory if direct file check returned empty
+        dir_proc = await asyncio.create_subprocess_exec(
             "rclone",
             "lsjson",
-            target_remote_file,
+            f"{REMOTE_NAME}:{REMOTE_FOLDER}",
+            "--include",
+            filename,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await ls_proc.communicate()
+        stdout, _ = await dir_proc.communicate()
         raw_output = stdout.decode().strip()
-
         if raw_output.startswith("["):
-            try:
-                items = json.loads(raw_output)
-                if items and "ID" in items[0]:
-                    return f"https://drive.google.com/open?id={items[0]['ID']}"
-            except Exception:
-                pass
+            items = json.loads(raw_output)
+            if items and "ID" in items[0]:
+                return f"https://drive.google.com/open?id={items[0]['ID']}"
 
     except Exception as e:
-        print(f"❌ Error uploading/getting link: {e}")
+        print(f"❌ Error uploading/getting file ID: {e}")
 
-    return f"https://drive.google.com/drive/search?q={filename}"
-
+    # Fallback to folder URL instead of unclickable search query
+    if REMOTE_FOLDER_ID:
+        return f"https://drive.google.com/drive/folders/{REMOTE_FOLDER_ID}"
+    return f"https://drive.google.com/drive/u/0/my-drive"
 
 async def upload_worker(
     file_path,
