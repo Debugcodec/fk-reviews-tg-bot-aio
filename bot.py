@@ -445,16 +445,16 @@ def fetch_flipkart_reviews(
     sort_type: str = "recent",
     original_url: str = "",
 ):
-    sort_param = SORT_PARAMS.get(sort_type, "MOST_RECENT")[cite: 1]
-    url = f"https://www.flipkart.com/product/product-reviews/item?pid={pid}&sortOrder={sort_param}&page={page}"[cite: 1]
+    sort_param = SORT_PARAMS.get(sort_type, "MOST_RECENT")
+    url = f"https://www.flipkart.com/product/product-reviews/item?pid={pid}&sortOrder={sort_param}&page={page}"
     
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        ),[cite: 1]
+        ),
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",[cite: 1]
+        "Accept-Language": "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
         "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
         "Sec-Ch-Ua-Mobile": "?0",
@@ -464,31 +464,30 @@ def fetch_flipkart_reviews(
         "Sec-Fetch-Site": "same-origin",
         "Sec-Fetch-User": "?1",
         "Upgrade-Insecure-Requests": "1",
-        "Referer": f"https://www.flipkart.com/product/product-reviews/item?pid={pid}",[cite: 1]
+        "Referer": f"https://www.flipkart.com/product/product-reviews/item?pid={pid}",
     }
 
     try:
         response = requests.get(url, headers=headers, impersonate="chrome124", timeout=15)
     except Exception as e:
         print(f"❌ Scraper Network Error: {e}")
-        return None, f"Request error: {e}", ""[cite: 1]
+        return None, f"Request error: {e}", ""
 
     if response.status_code != 200:
         print(f"⚠️ Flipkart Scraper Blocked with status: {response.status_code}")
-        return None, f"Status: {response.status_code}", ""[cite: 1]
+        return None, f"Status: {response.status_code}", ""
 
-    html_text = response.text[cite: 1]
-    product_title = extract_product_title(original_url or url, html_text, pid)[cite: 1]
-    reviews_found = [][cite: 1]
-    seen_ids = set()[cite: 1]
+    html_text = response.text
+    product_title = extract_product_title(original_url or url, html_text, pid)
+    reviews_found = []
+    seen_ids = set()
 
-    soup = BeautifulSoup(html_text, "html.parser")[cite: 1]
+    soup = BeautifulSoup(html_text, "html.parser")
 
-    # 1. Broad CSS selector matching any card containing a star rating
     ratings = soup.find_all(lambda tag: tag.name in ["div", "span"] and re.match(r"^[1-5](\.\d)?$", tag.get_text(strip=True)))
     
     for r_div in ratings:
-        card = r_div.find_parent("div", class_=re.compile(r"col|row|_27M-vq|cPHDOP|_1AtVbE|EKF0dM"))[cite: 1]
+        card = r_div.find_parent("div", class_=re.compile(r"col|row|_27M-vq|cPHDOP|_1AtVbE|EKF0dM"))
         if not card:
             continue
             
@@ -496,51 +495,48 @@ def fetch_flipkart_reviews(
         if len(card_text) < 30:
             continue
 
-        r_id_match = re.search(r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})", str(card))[cite: 1]
-        r_id = r_id_match.group(1) if r_id_match else uuid.uuid4().hex[:12][cite: 1]
+        r_id_match = re.search(r"([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})", str(card))
+        r_id = r_id_match.group(1) if r_id_match else uuid.uuid4().hex[:12]
         
         if r_id in seen_ids:
-            continue[cite: 1]
+            continue
 
-        seen_ids.add(r_id)[cite: 1]
+        seen_ids.add(r_id)
         
-        # Link extraction
-        link_elem = card.find("a", href=re.compile(r"/reviews/|\?reviewId=", re.IGNORECASE))[cite: 1]
-        if link_elem and "href" in link_elem.attrs:[cite: 1]
-            raw_href = link_elem["href"][cite: 1]
-            review_link = f"https://www.flipkart.com{raw_href}" if not raw_href.startswith("http") else raw_href[cite: 1]
+        link_elem = card.find("a", href=re.compile(r"/reviews/|\?reviewId=", re.IGNORECASE))
+        if link_elem and "href" in link_elem.attrs:
+            raw_href = link_elem["href"]
+            review_link = f"https://www.flipkart.com{raw_href}" if not raw_href.startswith("http") else raw_href
         else:
-            review_link = f"https://www.flipkart.com/reviews/{pid}:1?reviewId={r_id}"[cite: 1]
+            review_link = f"https://www.flipkart.com/reviews/{pid}:1?reviewId={r_id}"
 
-        # Extract text components
-        title_elem = card.find(["p", "div"], class_=re.compile(r"z9E0IG|_2-N8zT|heading|title", re.I))[cite: 1]
-        text_elem = card.find(["div", "span"], class_=re.compile(r"ZmyHeo|_11XBLa|txt|text", re.I))[cite: 1]
-        author_elem = card.find(["p", "span"], class_=re.compile(r"_2NsDsF|_2sc7ZR|author", re.I))[cite: 1]
+        title_elem = card.find(["p", "div"], class_=re.compile(r"z9E0IG|_2-N8zT|heading|title", re.I))
+        text_elem = card.find(["div", "span"], class_=re.compile(r"ZmyHeo|_11XBLa|txt|text", re.I))
+        author_elem = card.find(["p", "span"], class_=re.compile(r"_2NsDsF|_2sc7ZR|author", re.I))
         
         reviews_found.append({
-            "reviewId": r_id,[cite: 1]
+            "reviewId": r_id,
             "rating": r_div.get_text(strip=True),
-            "title": html_lib.unescape(title_elem.get_text(strip=True)) if title_elem else "Customer Review",[cite: 1]
-            "text": html_lib.unescape(text_elem.get_text(separator=" ", strip=True)) if text_elem else card_text[:200],[cite: 1]
-            "author": html_lib.unescape(author_elem.get_text(strip=True)) if author_elem else "Flipkart Customer",[cite: 1]
-            "location": "",[cite: 1]
+            "title": html_lib.unescape(title_elem.get_text(strip=True)) if title_elem else "Customer Review",
+            "text": html_lib.unescape(text_elem.get_text(separator=" ", strip=True)) if text_elem else card_text[:200],
+            "author": html_lib.unescape(author_elem.get_text(strip=True)) if author_elem else "Flipkart Customer",
+            "location": "",
             "date": "Recent",
-            "link": review_link,[cite: 1]
+            "link": review_link,
         })
 
-    # 2. JSON Parser fallback if HTML classes changed
     if not reviews_found:
-        scripts = re.findall(r"<script[^>]*>(.*?)</script>", html_text, flags=re.DOTALL)[cite: 1]
+        scripts = re.findall(r"<script[^>]*>(.*?)</script>", html_text, flags=re.DOTALL)
         for script in scripts:
-            if "reviewId" in script or "reviewText" in script:[cite: 1]
-                for raw in re.findall(r"=\s*(\{.*?\})\s*;", script, re.DOTALL):[cite: 1]
+            if "reviewId" in script or "reviewText" in script:
+                for raw in re.findall(r"=\s*(\{.*?\})\s*;", script, re.DOTALL):
                     try:
-                        walk_json(json.loads(raw))[cite: 1]
+                        walk_json(json.loads(raw))
                     except Exception:
-                        pass[cite: 1]
+                        pass
 
     print(f"📦 Scraped {len(reviews_found)} reviews for PID: {pid}")
-    return reviews_found, pid, product_title[cite: 1]
+    return reviews_found, pid, product_title
 
 # ==========================================
 # CRAWLER HELPER
