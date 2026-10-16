@@ -143,6 +143,8 @@ def search_author_in_db(pid: str, query_str: str):
             (pid, q, q, q),
         )
         return [dict(row) for row in cursor.fetchall()]
+
+
 # ==========================================
 # RCLONE & DRIVE HELPERS
 # ==========================================
@@ -215,10 +217,87 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
                 return f"https://drive.google.com/open?id={file_id}"
 
     except Exception as e:
-        print(f"â±ï¸ <b>Time:</b> {duration}s"
+        print(f"❌ Error uploading/getting link: {e}")
+    finally:
+        if os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+    # Fallback to folder only if file ID could not be fetched
+    if REMOTE_FOLDER_ID:
+        return f"https://drive.google.com/drive/folders/{REMOTE_FOLDER_ID}"
+    return "https://drive.google.com"
+
+
+async def upload_worker(
+    file_path,
+    file_name,
+    chat_id,
+    message_id,
+    context,
+    start_time,
+    original_size,
+    status_msg_id,
+):
+    attempt = 1
+    if file_path.lower().endswith((".jpg", ".jpeg", ".png")):
+        await asyncio.to_thread(fast_compress, file_path, TARGET_KB)
+
+    compressed_size = (
+        os.path.getsize(file_path) / 1024 if os.path.exists(file_path) else original_size
+    )
+    target_remote_file = f"{REMOTE_NAME}:{REMOTE_FOLDER}/{file_name}"
+
+    while True:
+        try:
+            if not os.path.exists(file_path):
+                raise Exception("Local file missing.")
+
+            move_proc = await asyncio.create_subprocess_exec(
+                "rclone",
+                "copyto",
+                file_path,
+                target_remote_file,
+                "--quiet",
+                "--ignore-checksum",
+                "--drive-chunk-size",
+                "64M",
+                "--transfers",
+                "8",
+                "--checkers",
+                "8",
+                "--buffer-size",
+                "32M",
             )
-        keyboard = InlineKeyboardMarkup(
-                [[InlineKeyboardButton("ðŸ”— Open Google Drive Link", url=drive_link)]]
+            await asyncio.wait_for(move_proc.wait(), timeout=25)
+
+            if move_proc.returncode != 0:
+                raise Exception(f"Rclone exited with code {move_proc.returncode}")
+
+            link_proc = await asyncio.create_subprocess_exec(
+                "rclone",
+                "link",
+                target_remote_file,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            stdout, _ = await asyncio.wait_for(link_proc.communicate(), timeout=8)
+            drive_link = stdout.decode().strip()
+
+            if not drive_link or not drive_link.startswith("http"):
+                drive_link = f"https://drive.google.com/drive/folders/{REMOTE_FOLDER_ID}"
+
+            duration = round(time.time() - start_time, 2)
+            text = (
+                f"✅ <b>Upload Success!</b>\n\n"
+                f"📊 <b>Size:</b> {original_size:.1f}KB → {compressed_size:.1f}KB\n"
+                f"⏱️ <b>Time:</b> {duration}s"
+            )
+
+            keyboard = InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🔗 Open Google Drive Link", url=drive_link)]]
             )
             await context.bot.edit_message_text(
                 chat_id=chat_id,
@@ -233,18 +312,20 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
             return
 
         except Exception as e:
-            print(f"âš ï¸ Upload Attempt {attempt} failed: {str(e)}")
+            print(f"⚠️ Upload Attempt {attempt} failed: {str(e)}")
             attempt += 1
             try:
                 await context.bot.edit_message_text(
                     chat_id=chat_id,
                     message_id=status_msg_id,
-                    text=f"ðŸ”„ <b>Uploading to Drive... (Retry {attempt})</b>",
+                    text=f"🔄 <b>Uploading to Drive... (Retry {attempt})</b>",
                     parse_mode=ParseMode.HTML,
                 )
             except Exception:
                 pass
             await asyncio.sleep(1.5)
+
+
 # ==========================================
 # SCREENSHOT ENGINE (UPDATED CHROMIUM RESILIENT)
 # ==========================================
@@ -283,7 +364,7 @@ def take_desktop_screenshot(review_url: str) -> bytes:
             os.remove(snap_path)
             return data
     except Exception as e:
-        print(f"âš ï¸ Local browser capture failed: {e}")
+        print(f"⚠️ Local browser capture failed: {e}")
 
     # Fallback: Microlink API with a 4-second wait for React hydration
     try:
@@ -298,9 +379,10 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         if resp.status_code == 200 and resp.content and len(resp.content) > 5000:
             return resp.content
     except Exception as e:
-        print(f"âš ï¸ Microlink fallback error: {e}")
+        print(f"⚠️ Microlink fallback error: {e}")
 
     return None
+
 
 def clean_location(loc_obj) -> str:
     if not loc_obj:
@@ -319,8 +401,8 @@ def clean_date_string(raw_date: str) -> str:
     if not raw_date:
         return ""
     d = str(raw_date).strip()
-    d = re.sub(r"^Verified Purchase\s*[,â€¢Â·]?\s*", "", d, flags=re.IGNORECASE)
-    d = re.sub(r"^Certified Buyer\s*[,â€¢Â·]?\s*", "", d, flags=re.IGNORECASE)
+    d = re.sub(r"^Verified Purchase\s*[,•·]?\s*", "", d, flags=re.IGNORECASE)
+    d = re.sub(r"^Certified Buyer\s*[,•·]?\s*", "", d, flags=re.IGNORECASE)
     return d.strip()
 
 
@@ -543,6 +625,7 @@ def fetch_flipkart_reviews(
 
     return reviews_found, pid, product_title
 
+
 # ==========================================
 # CRAWLER HELPER
 # ==========================================
@@ -580,28 +663,34 @@ def build_review_message(
     total_cached: int = 0,
 ):
     sort_labels = {
-        "recent": "ðŸ•’ Latest",
-        "helpful": "ðŸ’¡ Most Helpful",
-        "positive": "â Negative",
+        "recent": "🕒 Latest",
+        "helpful": "💡 Most Helpful",
+        "positive": "⭐ Positive",
+        "negative": "⚠️ Negative",
     }
 
     text = ""
     if converted_info:
-        text += converted_info + "\nâ”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n"
+        text += converted_info + "\n━━━━━━━━━━━━━━━━━━━━\n"
 
-    text += f"ðŸ“¦ <b>Product:</b> <b>{html_lib.escape(product_title)}</b>\n"
+    text += f"📦 <b>Product:</b> <b>{html_lib.escape(product_title)}</b>\n"
     if search_query:
         text += (
-            f"ðŸ” <b>Local Author Search:</b> <i>{html_lib.escape(search_query)}</i>"
+            f"🔍 <b>Local Author Search:</b> <i>{html_lib.escape(search_query)}</i>"
             f" (Found: {len(reviews)})\n"
         )
     else:
         count_str = f" | Total Saved: {total_cached}" if total_cached > 0 else ""
-        text += f"ðŸ“Š <b>Sorting:</b> {sort_labels.get(sort_type, 'Latest')} | <b>Page:</b> {page}{count_str}\n"
-    text += "â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”â”\n\n"
+        text += f"📊 <b>Sorting:</b> {sort_labels.get(sort_type, 'Latest')} | <b>Page:</b> {page}{count_str}\n"
+    text += "━━━━━━━━━━━━━━━━━━━━\n\n"
 
     if not reviews:
-        text += "â Search Another Author", callback_data=f"search_{pid}")],
+        text += "❌ <i>No reviews found in local database.</i>\n"
+        return (
+            text,
+            InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔄 Crawl/Sync From Web", callback_data=f"sync_{pid}")],
+                [InlineKeyboardButton("🔍 Search Another Author", callback_data=f"search_{pid}")],
             ]),
         )
 
@@ -619,25 +708,48 @@ def build_review_message(
         link = r.get("link")
 
         if safe_location:
-            user_line = f"ðŸ‘¤ <b>Author:</b> <b>{safe_author}</b> (ðŸ“ <i>{safe_location}</i>)\n"
+            user_line = f"👤 <b>Author:</b> <b>{safe_author}</b> (📍 <i>{safe_location}</i>)\n"
         else:
-            user_line = f"ðŸ‘¤ <b>Author:</b> <b>{safe_author}</b>\n"
+            user_line = f"👤 <b>Author:</b> <b>{safe_author}</b>\n"
 
-        date_line = f"ðŸ•’ <b>Posted:</b> <i>{safe_date}</i>\n" if safe_date else ""
+        date_line = f"🕒 <b>Posted:</b> <i>{safe_date}</i>\n" if safe_date else ""
         text += (
-            f"<b>#{idx}</b> | â Negative", callback_data=f"rev_{pid}_1_negative"),
+            f"<b>#{idx}</b> | ⭐ <b>Rating:</b> {safe_rating} / 5\n"
+            f"{user_line}"
+            f"{date_line}"
+            f"📌 <b>Title:</b> {safe_title}\n"
+            f"💬 <b>Review:</b> {safe_text}...\n"
+            f'🔗 <a href="{link}">Direct Review Link</a>\n'
+            "────────────────────\n"
+        )
+
+        r_id = r.get("review_id") or r.get("reviewId")
+        screenshot_buttons.append(
+            InlineKeyboardButton(f"📸 Screenshot #{idx}", callback_data=f"snap_{r_id}")
+        )
+
+    for i in range(0, len(screenshot_buttons), 2):
+        keyboard.append(screenshot_buttons[i : i + 2])
+
+    keyboard.append([
+        InlineKeyboardButton("💡 Helpful", callback_data=f"rev_{pid}_1_helpful"),
+        InlineKeyboardButton("🕒 Latest", callback_data=f"rev_{pid}_1_recent"),
     ])
     keyboard.append([
-        InlineKeyboardButton("ðŸ” Search Author", callback_data=f"search_{pid}"),
-        InlineKeyboardButton("ðŸ”„ Sync Web", callback_data=f"sync_{pid}"),
+        InlineKeyboardButton("⭐ Positive", callback_data=f"rev_{pid}_1_positive"),
+        InlineKeyboardButton("⚠️ Negative", callback_data=f"rev_{pid}_1_negative"),
+    ])
+    keyboard.append([
+        InlineKeyboardButton("🔍 Search Author", callback_data=f"search_{pid}"),
+        InlineKeyboardButton("🔄 Sync Web", callback_data=f"sync_{pid}"),
     ])
 
     nav_row = []
     if page > 1 and not search_query:
-        nav_row.append(InlineKeyboardButton("â¬…ï¸ Prev", callback_data=f"rev_{pid}_{page - 1}_{sort_type}"))
+        nav_row.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"rev_{pid}_{page - 1}_{sort_type}"))
 
     if len(reviews) >= per_page and not search_query:
-        nav_row.append(InlineKeyboardButton("Next âž¡ï¸", callback_data=f"rev_{pid}_{page + 1}_{sort_type}"))
+        nav_row.append(InlineKeyboardButton("Next ➡️", callback_data=f"rev_{pid}_{page + 1}_{sort_type}"))
 
     if nav_row:
         keyboard.append(nav_row)
@@ -660,10 +772,10 @@ async def delete_saved_messages(context: ContextTypes.DEFAULT_TYPE, chat_id: int
 # ==========================================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "ðŸ‘‹ <b>Welcome!</b>\n\n"
-        "â€¢ Send a <b>Flipkart / Shopsy product link</b> to parse, cache in local"
+        "👋 <b>Welcome!</b>\n\n"
+        "• Send a <b>Flipkart / Shopsy product link</b> to parse, cache in local"
         " DB, search authors, and capture desktop views.\n"
-        "â€¢ Send <b>Images / Photos</b> to auto-compress and upload directly to"
+        "• Send <b>Images / Photos</b> to auto-compress and upload directly to"
         " Google Drive via Rclone.",
         parse_mode=ParseMode.HTML,
     )
@@ -683,7 +795,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
 
         if not matched_reviews:
             status_msg = await update.message.reply_text(
-                f"ðŸ” Not in local cache, scanning web for '<b>{html_lib.escape(user_text)}</b>'...",
+                f"🔍 Not in local cache, scanning web for '<b>{html_lib.escape(user_text)}</b>'...",
                 parse_mode=ParseMode.HTML,
             )
             loop = asyncio.get_running_loop()
@@ -738,16 +850,111 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             pid = pid.group(1)
 
         if not pid:
-            await update.message.reply_text("â Query answer error: {e}")
+            await update.message.reply_text("❌ Could not find a valid `pid` in the provided link.")
+            return
+
+        new_netloc = "www.shopsy.in" if "flipkart.com" in parsed.netloc else "www.flipkart.com"
+        target_label = "Shopsy" if "flipkart.com" in parsed.netloc else "Flipkart"
+        new_query = urlencode({"pid": pid}) if pid else ""
+        converted_url = urlunparse((
+            parsed.scheme,
+            new_netloc,
+            parsed.path,
+            parsed.params,
+            new_query,
+            parsed.fragment,
+        ))
+
+        converted_info = (
+            f"🔗 <b>{target_label} Link:</b>\n{converted_url}\n\n"
+            f"📝 <b>Write Review Link:</b>\n{REVIEW_BASE_URL}{pid}"
+        )
+
+        cached_reviews = get_cached_reviews(pid, page=1, per_page=5)
+        total_count = count_cached_reviews(pid)
+        reviews = []
+
+        if cached_reviews:
+            product_title = cached_reviews[0].get("product_title", f"Product ({pid})")
+            reviews = cached_reviews
+        else:
+            status_msg = await update.message.reply_text(
+                "📥 <i>Product not yet cached. Crawling initial reviews...</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            loop = asyncio.get_running_loop()
+            scraped_reviews, product_title = await loop.run_in_executor(
+                None, crawl_and_cache_product, pid, 3, "recent", url
+            )
+            try:
+                await status_msg.delete()
+            except Exception:
+                pass
+            reviews = get_cached_reviews(pid, page=1, per_page=5)
+            total_count = count_cached_reviews(pid)
+
+        if not reviews:
+            await update.message.reply_text(
+                f"📦 <b>Product:</b> <b>{html_lib.escape(product_title)}</b>\n\n"
+                f"{converted_info}\n\n❌ <i>No reviews found online.</i>",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            return
+
+        # Global links mapping
+        global_links = context.bot_data.setdefault("review_links", {})
+        for r in reviews:
+            r_id = r.get("review_id") or r.get("reviewId")
+            global_links[r_id] = r["link"]
+
+        context.bot_data[f"title_{pid}"] = product_title
+        context.bot_data[f"info_{pid}"] = converted_info
+
+        await delete_saved_messages(context, chat_id)
+
+        msg_text, reply_markup = build_review_message(
+            reviews,
+            pid,
+            product_title,
+            1,
+            "recent",
+            per_page=5,
+            converted_info=converted_info,
+            total_cached=total_count,
+        )
+
+        sent_msg = await context.bot.send_message(
+            chat_id=chat_id,
+            text=msg_text,
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        context.user_data["messages_to_clean"] = [sent_msg.message_id]
+
+
+# ==========================================
+# CALLBACK QUERY (BUTTON) HANDLER
+# ==========================================
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    data = query.data
+    print(f"\n👉 [BUTTON TAPPED] Received data: '{data}'")
+
+    # 1. Immediately acknowledge the click
+    try:
+        await query.answer()
+    except Exception as e:
+        print(f"⚠️ Query answer error: {e}")
 
     # ==========================================
     # 2. SCREENSHOT BUTTONS (snap_<review_id>)
     # ==========================================
     if data.startswith("snap_"):
         review_id = data.split("snap_", 1)[1]
-        print(f"ðŸ“¸ Looking for screenshot ID: {review_id}")
+        print(f"📸 Looking for screenshot ID: {review_id}")
 
-        # Look in bot_data first (global), then user_data, then SQLite
         review_url = None
         if "review_links" in context.bot_data:
             review_url = context.bot_data["review_links"].get(review_id)
@@ -763,7 +970,133 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                     review_url = row[0]
 
         if not review_url:
-            print(f"â No more reviews on page {page}.", show_alert=True)
+            print(f"❌ Review ID {review_id} not found anywhere in memory or DB.")
+            await query.message.reply_text("❌ Review link not found. Tap '🔄 Sync Web' to reload.")
+            return
+
+        status_msg = await query.message.reply_text(
+            "📸 <i>Rendering snapshot via Chromium...</i>", parse_mode=ParseMode.HTML
+        )
+
+        loop = asyncio.get_running_loop()
+        image_bytes = await loop.run_in_executor(None, take_desktop_screenshot, review_url)
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        if not image_bytes:
+            print("❌ Screenshot function returned None (Chromium or fallback failed)")
+            await query.message.reply_text("❌ Screenshot failed. Please check the review link directly.")
+            return
+
+        safe_review_url = html_lib.escape(review_url)
+        initial_caption = (
+            "🔗 <i>Uploading to Google Drive...</i>\n"
+            f'🔗 <a href="{safe_review_url}">Review Link</a>'
+        )
+        sent_photo = await query.message.reply_photo(
+            photo=image_bytes, caption=initial_caption, parse_mode=ParseMode.HTML
+        )
+
+        async def upload_and_edit_caption(photo_msg, raw_bytes, r_url):
+            filename = f"review_{uuid.uuid4().hex[:8]}.jpg"
+            drive_link = await upload_screenshot_to_drive(raw_bytes, filename)
+            safe_drive = html_lib.escape(drive_link)
+            safe_rev = html_lib.escape(r_url)
+            updated_caption = (
+                f'🔗 <a href="{safe_drive}">Google Drive Link</a>\n'
+                f'🔗 <a href="{safe_rev}">Review Link</a>'
+            )
+            try:
+                await photo_msg.edit_caption(caption=updated_caption, parse_mode=ParseMode.HTML)
+            except Exception:
+                pass
+
+        asyncio.create_task(upload_and_edit_caption(sent_photo, image_bytes, review_url))
+        return
+
+    # ==========================================
+    # 3. SEARCH & SYNC BUTTONS
+    # ==========================================
+    if data.startswith("search_"):
+        pid = data.split("search_", 1)[1]
+        context.user_data["awaiting_author_search"] = True
+        context.user_data["search_pid"] = pid
+        prompt_msg = await query.message.reply_text(
+            "🔎 <b>Send the Author Name</b> to query local DB:",
+            parse_mode=ParseMode.HTML,
+        )
+        context.user_data["prompt_msg_id"] = prompt_msg.message_id
+        return
+
+    if data.startswith("sync_"):
+        pid = data.split("sync_", 1)[1]
+        status_msg = await query.message.reply_text(
+            "🔄 <i>Fetching fresh reviews from Flipkart...</i>",
+            parse_mode=ParseMode.HTML,
+        )
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, crawl_and_cache_product, pid, 5, "recent")
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        reviews = get_cached_reviews(pid, page=1, per_page=5)
+        total_count = count_cached_reviews(pid)
+        product_title = context.bot_data.get(f"title_{pid}", f"Product ({pid})")
+        converted_info = context.bot_data.get(f"info_{pid}", "")
+
+        # Save to global bot_data
+        global_links = context.bot_data.setdefault("review_links", {})
+        for r in reviews:
+            r_id = r.get("review_id") or r.get("reviewId")
+            global_links[r_id] = r["link"]
+
+        msg_text, reply_markup = build_review_message(
+            reviews, pid, product_title, 1, "recent", per_page=5,
+            converted_info=converted_info, total_cached=total_count
+        )
+        try:
+            await query.edit_message_text(
+                msg_text, reply_markup=reply_markup,
+                parse_mode=ParseMode.HTML, disable_web_page_preview=True
+            )
+        except Exception as e:
+            print(f"Edit message error on sync: {e}")
+        return
+
+    # ==========================================
+    # 4. FILTERS & PAGINATION (rev_<pid>_<page>_<sort>)
+    # ==========================================
+    if data.startswith("rev_"):
+        try:
+            _, remainder = data.split("rev_", 1)
+            parts = remainder.rsplit("_", 2)
+            pid = parts[0]
+            page = int(parts[1])
+            sort_type = parts[2]
+            print(f"📄 Navigating: PID={pid}, Page={page}, Sort={sort_type}")
+        except Exception as e:
+            print(f"❌ Error parsing rev callback data '{data}': {e}")
+            return
+
+        product_title = context.bot_data.get(f"title_{pid}", f"Product ({pid})")
+        converted_info = context.bot_data.get(f"info_{pid}", "")
+
+        reviews = get_cached_reviews(pid, page=page, per_page=5)
+
+        if not reviews:
+            loop = asyncio.get_running_loop()
+            web_revs, _, _ = await loop.run_in_executor(None, fetch_flipkart_reviews, pid, page, sort_type)
+            if web_revs:
+                save_reviews_to_db(pid, product_title, web_revs, sort_type)
+                reviews = get_cached_reviews(pid, page=page, per_page=5)
+
+            if not reviews:
+                await query.answer(f"⚠️ No more reviews on page {page}.", show_alert=True)
                 return
 
         total_count = count_cached_reviews(pid)
@@ -783,7 +1116,12 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
                 parse_mode=ParseMode.HTML, disable_web_page_preview=True
             )
         except Exception as e:
-            print(f"â³ <b>Processing media...</b>", parse_mode=ParseMode.HTML)
+            print(f"❌ Edit message failed (likely HTML parsing or unchanged): {e}")
+
+
+async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    start_time = time.time()
+    status_msg = await update.message.reply_text("⏳ <b>Processing media...</b>", parse_mode=ParseMode.HTML)
 
     unique_name = ""
     dl_attempt = 1
@@ -807,13 +1145,13 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             await asyncio.wait_for(file_obj.download_to_drive(unique_name), timeout=25)
             break
         except Exception as e:
-            print(f"âš ï¸ Telegram Download Attempt {dl_attempt} failed: {str(e)}")
+            print(f"⚠️ Telegram Download Attempt {dl_attempt} failed: {str(e)}")
             dl_attempt += 1
             try:
                 await context.bot.edit_message_text(
                     chat_id=update.message.chat_id,
                     message_id=status_msg.message_id,
-                    text=f"ðŸ”„ <b>Retrying download from Telegram... ({dl_attempt})</b>",
+                    text=f"🔄 <b>Retrying download from Telegram... ({dl_attempt})</b>",
                     parse_mode=ParseMode.HTML,
                 )
             except Exception:
@@ -824,7 +1162,7 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
         await context.bot.edit_message_text(
             chat_id=update.message.chat_id,
             message_id=status_msg.message_id,
-            text="â³ <b>Uploading to Drive...</b>",
+            text="⏳ <b>Uploading to Drive...</b>",
             parse_mode=ParseMode.HTML,
         )
     except Exception:
@@ -852,16 +1190,15 @@ async def global_error_handler(update, context):
         err_msg = str(context.error)
         if "Message is not modified" in err_msg or "Query is too old" in err_msg:
             return
-    print(f"âš ï¸ Unhandled error: {context.error}")
+    print(f"⚠️ Unhandled error: {context.error}")
 
 
 async def post_init(application):
-    # Automatically clear any dangling webhook (e.g., from Telegram Serverless)
     try:
         await application.bot.delete_webhook(drop_pending_updates=True)
-        print("ðŸ”— Webhook cleared: Polling is clean.")
+        print("🔗 Webhook cleared: Polling is clean.")
     except Exception as e:
-        print(f"âš ï¸ Webhook cleanup notice: {e}")
+        print(f"⚠️ Webhook cleanup notice: {e}")
 
 
 if __name__ == "__main__":
@@ -884,5 +1221,5 @@ if __name__ == "__main__":
     app.add_handler(CallbackQueryHandler(button_callback))
     app.add_error_handler(global_error_handler)
 
-    print("ðŸš€ Bot Active (SQLite Local Cache)...")
+    print("🚀 Bot Active (SQLite Local Cache)...")
     app.run_polling(drop_pending_updates=True)
