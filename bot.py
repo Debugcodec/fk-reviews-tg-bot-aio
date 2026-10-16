@@ -346,7 +346,7 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         "--disable-breakpad",
         "--disable-features=DBus,CrashReporting",
         "--window-size=1280,820",
-        "--virtual-time-budget=3000",
+        "--virtual-time-budget=6000",
         (
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
             " AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
