@@ -334,9 +334,7 @@ async def upload_worker(
 # SCREENSHOT ENGINE (TERMUX CHROMIUM)
 # ==========================================
 def take_desktop_screenshot(review_url: str) -> bytes:
-    home_dir = os.path.expanduser("~")
-    snap_path = os.path.join(home_dir, "temp_review_snap.png")
-    
+    snap_path = "/data/data/com.termux/files/home/temp_review_snap.png"
     if os.path.exists(snap_path):
         try:
             os.remove(snap_path)
@@ -345,45 +343,43 @@ def take_desktop_screenshot(review_url: str) -> bytes:
 
     cmd = [
         "chromium-browser",
-        "--headless",
+        "--headless=new",
         "--disable-gpu",
         "--no-sandbox",
-        "--disable-setuid-sandbox",
+        "--single-process",
+        "--no-zygote",
         "--disable-dev-shm-usage",
         "--disable-software-rasterizer",
-        "--disable-features=DBus",
-        "--disable-background-networking",
+        "--disable-crash-reporter",
+        "--disable-breakpad",
+        "--disable-features=DBus,CrashReporting",
         "--window-size=1280,820",
-        "--virtual-time-budget=4000",
-        "--run-all-compositor-stages-before-draw",
+        "--virtual-time-budget=3000",
         (
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+            " AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         ),
         f"--screenshot={snap_path}",
         review_url,
     ]
 
     try:
-        proc = subprocess.run(
+        # Ignore non-zero exit codes if the file was written successfully
+        subprocess.run(
             cmd,
             timeout=15,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
         )
-        if os.path.exists(snap_path) and os.path.getsize(snap_path) > 2000:
+        if os.path.exists(snap_path) and os.path.getsize(snap_path) > 5000:
             with open(snap_path, "rb") as f:
                 data = f.read()
             os.remove(snap_path)
             return data
-        else:
-            if proc.stderr:
-                print(f"⚠️ Chromium returned exit code {proc.returncode}: {proc.stderr[:150]}")
     except Exception as e:
         print(f"⚠️ Termux Chromium capture failed: {e}")
 
-    # Fallback to Microlink API
+    # Fallback to Microlink API if local headless Chromium fails
     try:
         encoded_url = quote_plus(review_url)
         api_endpoint = (
@@ -399,7 +395,7 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         print(f"⚠️ Microlink fallback error: {e}")
 
     return None
-
+    
 
 def clean_location(loc_obj) -> str:
     if not loc_obj:
