@@ -217,8 +217,7 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
     except Exception as e:
         print(f"â±ï¸ <b>Time:</b> {duration}s"
             )
-
-            keyboard = InlineKeyboardMarkup(
+        keyboard = InlineKeyboardMarkup(
                 [[InlineKeyboardButton("ðŸ”— Open Google Drive Link", url=drive_link)]]
             )
             await context.bot.edit_message_text(
