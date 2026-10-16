@@ -566,8 +566,11 @@ def fetch_flipkart_reviews(
                     and r_id not in seen_ids
                 ):
                     seen_ids.add(r_id)
-                    full_permalink = f"https://www.flipkart.com/product/product-reviews/item?pid={pid}&reviewId={r_id}"
-                    
+                    raw_url = (
+                        node.get("url")
+                        or node.get("reviewUrl")
+                        or f"/reviews/{pid}:1?reviewId={r_id}
+
                     full_permalink = (
                         f"https://www.flipkart.com{raw_url}" if not raw_url.startswith("http") else raw_url
                     )
