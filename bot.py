@@ -326,61 +326,58 @@ async def upload_worker(
 # SCREENSHOT ENGINE (UPDATED CHROMIUM RESILIENT)
 # ==========================================
 def take_desktop_screenshot(review_url: str) -> bytes:
-    snap_path = "/data/data/com.termux/files/home/temp_review_snap.png"
+    snap_path = os.path.join(os.path.expanduser("~"), "temp_review_snap.png")
     if os.path.exists(snap_path):
         try:
             os.remove(snap_path)
         except Exception:
             pass
 
+    # Windows / Chromium headless command with real render wait
     cmd = [
-        "chromium-browser",
-        "--headless=new",
+        "chromium-browser",  # On Windows without Termux, use "chrome" or full path to chrome.exe if available
+        "--headless=new",    # Uses modern Chrome headless mode which renders JS properly
         "--disable-gpu",
         "--no-sandbox",
-        "--single-process",
-        "--no-zygote",
         "--disable-dev-shm-usage",
-        "--disable-software-rasterizer",
-        "--disable-crash-reporter",
-        "--disable-breakpad",
-        "--disable-features=DBus,CrashReporting",
         "--window-size=1280,820",
-        "--virtual-time-budget=6000",
+        "--hide-scrollbars",
+        "--enable-javascript",
         (
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-            " AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         ),
         f"--screenshot={snap_path}",
         review_url,
     ]
 
     try:
-        subprocess.run(cmd, timeout=15, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Give Chromium enough time to execute page JS
+        subprocess.run(cmd, timeout=20, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if os.path.exists(snap_path) and os.path.getsize(snap_path) > 5000:
             with open(snap_path, "rb") as f:
                 data = f.read()
             os.remove(snap_path)
             return data
     except Exception as e:
-        print(f"⚠️ Local Chromium capture failed: {e}")
+        print(f"⚠️ Local browser capture failed: {e}")
 
+    # Fallback: Microlink API with a 4-second wait for React hydration
     try:
         encoded_url = quote_plus(review_url)
         api_endpoint = (
             f"https://api.microlink.io?url={encoded_url}"
             "&screenshot=true&meta=false&embed=screenshot.url"
             "&viewport.width=1280&viewport.height=820&viewport.isMobile=false"
-            "&waitForTimeout=3000"
+            "&waitForTimeout=4000"
         )
-        resp = requests.get(api_endpoint, timeout=18)
-        if resp.status_code == 200 and resp.content:
+        resp = requests.get(api_endpoint, timeout=20)
+        if resp.status_code == 200 and resp.content and len(resp.content) > 5000:
             return resp.content
     except Exception as e:
         print(f"⚠️ Microlink fallback error: {e}")
 
     return None
-
 
 def clean_location(loc_obj) -> str:
     if not loc_obj:
