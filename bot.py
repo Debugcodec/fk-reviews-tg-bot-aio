@@ -334,118 +334,132 @@ async def upload_worker(
 # SCREENSHOT ENGINE (TERMUX CHROMIUM)
 # ==========================================
 def take_desktop_screenshot(review_url: str) -> bytes:
-  snap_path = "/data/data/com.termux/files/home/temp_review_snap.png"
-  if os.path.exists(snap_path):
+    home_dir = os.path.expanduser("~")
+    snap_path = os.path.join(home_dir, "temp_review_snap.png")
+    
+    if os.path.exists(snap_path):
+        try:
+            os.remove(snap_path)
+        except Exception:
+            pass
+
+    cmd = [
+        "chromium-browser",
+        "--headless",
+        "--disable-gpu",
+        "--no-sandbox",
+        "--disable-setuid-sandbox",
+        "--disable-dev-shm-usage",
+        "--disable-software-rasterizer",
+        "--disable-features=DBus",
+        "--disable-background-networking",
+        "--window-size=1280,820",
+        "--virtual-time-budget=4000",
+        "--run-all-compositor-stages-before-draw",
+        (
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
+        f"--screenshot={snap_path}",
+        review_url,
+    ]
+
     try:
-      os.remove(snap_path)
-    except Exception:
-      pass
+        proc = subprocess.run(
+            cmd,
+            timeout=15,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        if os.path.exists(snap_path) and os.path.getsize(snap_path) > 2000:
+            with open(snap_path, "rb") as f:
+                data = f.read()
+            os.remove(snap_path)
+            return data
+        else:
+            if proc.stderr:
+                print(f"⚠️ Chromium returned exit code {proc.returncode}: {proc.stderr[:150]}")
+    except Exception as e:
+        print(f"⚠️ Termux Chromium capture failed: {e}")
 
-  cmd = [
-      "chromium-browser",
-      "--headless",
-      "--disable-gpu",
-      "--no-sandbox",
-      "--disable-setuid-sandbox",
-      "--disable-dev-shm-usage",
-      "--disable-software-rasterizer",
-      "--disable-features=DBus",
-      "--disable-background-networking",
-      "--window-size=1280,820",
-      "--virtual-time-budget=2000",
-      "--run-all-compositor-stages-before-draw",
-      (
-          "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
-          " AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0"
-          " Safari/537.36"
-      ),
-      f"--screenshot={snap_path}",
-      review_url,
-  ]
+    # Fallback to Microlink API
+    try:
+        encoded_url = quote_plus(review_url)
+        api_endpoint = (
+            f"https://api.microlink.io?url={encoded_url}"
+            "&screenshot=true&meta=false&embed=screenshot.url"
+            "&viewport.width=1280&viewport.height=820&viewport.isMobile=false"
+            "&waitForTimeout=3000"
+        )
+        resp = requests.get(api_endpoint, timeout=18)
+        if resp.status_code == 200 and resp.content:
+            return resp.content
+    except Exception as e:
+        print(f"⚠️ Microlink fallback error: {e}")
 
-  try:
-    subprocess.run(cmd, timeout=12, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if os.path.exists(snap_path) and os.path.getsize(snap_path) > 10000:
-      with open(snap_path, "rb") as f:
-        data = f.read()
-      os.remove(snap_path)
-      return data
-  except Exception as e:
-    print(f"⚠️ Termux Chromium capture failed: {e}")
-
-  try:
-    encoded_url = quote_plus(review_url)
-    api_endpoint = (
-        f"https://api.microlink.io?url={encoded_url}"
-        "&screenshot=true&meta=false&embed=screenshot.url"
-        "&viewport.width=1280&viewport.height=820&viewport.isMobile=false"
-        "&waitForTimeout=3000"
-    )
-    resp = requests.get(api_endpoint, timeout=18)
-    if resp.status_code == 200 and resp.content:
-      return resp.content
-  except Exception as e:
-    print(f"⚠️ Microlink fallback error: {e}")
-
-  return None
+    return None
 
 
 def clean_location(loc_obj) -> str:
-  if not loc_obj:
+    if not loc_obj:
+        return ""
+    if isinstance(loc_obj, dict):
+        city = loc_obj.get("city") or loc_obj.get("cityName") or ""
+        state = loc_obj.get("state") or loc_obj.get("stateName") or ""
+        parts = [p.strip() for p in [city, state] if p and str(p).strip()]
+        return ", ".join(parts)
+    if isinstance(loc_obj, str):
+        return loc_obj.strip()
     return ""
-  if isinstance(loc_obj, dict):
-    city = loc_obj.get("city") or loc_obj.get("cityName") or ""
-    state = loc_obj.get("state") or loc_obj.get("stateName") or ""
-    parts = [p.strip() for p in [city, state] if p and str(p).strip()]
-    return ", ".join(parts)
-  if isinstance(loc_obj, str):
-    return loc_obj.strip()
-  return ""
 
 
 def clean_date_string(raw_date: str) -> str:
-  if not raw_date:
-    return ""
-  d = str(raw_date).strip()
-  d = re.sub(r"^Verified Purchase\s*[,•·]?\s*", "", d, flags=re.IGNORECASE)
-  d = re.sub(r"^Certified Buyer\s*[,•·]?\s*", "", d, flags=re.IGNORECASE)
-  return d.strip()
+    if not raw_date:
+        return ""
+    d = str(raw_date).strip()
+    d = re.sub(r"^Verified Purchase\s*[,•·]?\s*", "", d, flags=re.IGNORECASE)
+    d = re.sub(r"^Certified Buyer\s*[,•·]?\s*", "", d, flags=re.IGNORECASE)
+    return d.strip()
 
 
 def extract_author_name(node) -> str:
-  if not node:
+    if not node:
+        return "Flipkart Customer"
+    if isinstance(node, dict):
+        name = (
+            node.get("name")
+            or node.get("authorName")
+            or node.get("reviewerName")
+            or node.get("text")
+        )
+        if name and isinstance(name, str) and name.strip():
+            return html_lib.unescape(name.strip())
+    if isinstance(node, str) and node.strip():
+        if not node.startswith("{") and "Location" not in node:
+            return html_lib.unescape(node.strip())
     return "Flipkart Customer"
-  if isinstance(node, dict):
-    name = (
-        node.get("name")
-        or node.get("authorName")
-        or node.get("reviewerName")
-        or node.get("text")
-    )
-    if name and isinstance(name, str) and name.strip():
-      return html_lib.unescape(name.strip())
-  if isinstance(node, str) and node.strip():
-    if not node.startswith("{") and "Location" not in node:
-      return html_lib.unescape(node.strip())
-  return "Flipkart Customer"
 
 
 def extract_product_title(original_url: str, html_text: str, fallback_pid: str) -> str:
-  slug_match = re.search(r"(?:flipkart|shopsy)\.(?:com|in)/([^/?#]+)/", original_url)
-  if slug_match:
-    slug = slug_match.group(1)
-    if slug not in ["product", "product-reviews", "reviews", "p"]:
-      clean_name = " ".join(word.capitalize() for word in slug.split("-") if word)
-      if len(clean_name) > 3:
-        return clean_name
+    slug_match = re.search(r"(?:flipkart|shopsy)\.(?:com|in)/([^/?#]+)/", original_url)
+    if slug_match:
+        slug = slug_match.group(1)
+        if slug not in ["product", "product-reviews", "reviews", "p"]:
+            clean_name = " ".join(word.capitalize() for word in slug.split("-") if word)
+            if len(clean_name) > 3:
+                return clean_name
 
-  match_title = re.search(r'"productTitle"\s*:\s*"([^"]+)"|"title"\s*:\s*"([^"]+)"', html_text)
-  if match_title:
-    cand = match_title.group(1) or match_title.group(2)
-    if cand and "Review" not in cand and "Flipkart" not in cand and len(cand) > 5:
-      return html_lib.unescape(cand).strip()
+    match_title = re.search(r'"productTitle"\s*:\s*"([^"]+)"|"title"\s*:\s*"([^"]+)"', html_text)
+    if match_title:
+        cand = match_title.group(1) or match_title.group(2)
+        if cand:
+            cand_lower = cand.lower()
+            if "review" not in cand_lower and "flipkart" not in cand_lower and len(cand) > 5:
+                return html_lib.unescape(cand).strip()
 
-  return f"Product ({fallback_pid})"
+    return f"Product ({fallback_pid})"
+    
 
 
 # ==========================================
