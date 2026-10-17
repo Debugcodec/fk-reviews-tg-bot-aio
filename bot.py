@@ -320,18 +320,13 @@ async def upload_worker(
 # SCREENSHOT ENGINE (CLEAN & WORKING)
 # ==========================================
 import io
-from PIL import Image
-
-import io
 from PIL import Image, ImageStat
 
 def is_mostly_blank(img: Image.Image) -> bool:
     """Checks if the captured review area is still an empty white skeleton."""
-    # Sample the review body area (x: 350 to 900, y: 150 to 350)
     sample_box = (350, 150, 900, 350)
     sample = img.crop(sample_box).convert("L")
     stat = ImageStat.Stat(sample)
-    # If standard deviation is extremely low, it's just a blank white box
     return stat.stddev[0] < 5.0
 
 def take_desktop_screenshot(review_url: str) -> bytes:
@@ -353,7 +348,7 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         "--window-size=1280,820",
         "--hide-scrollbars",
         "--enable-javascript",
-        "--virtual-time-budget=8000",  # Increased to 8s for cellular reliability
+        "--virtual-time-budget=8000",
         (
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -371,11 +366,12 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         )
         if os.path.exists(snap_path) and os.path.getsize(snap_path) > 3000:
             with Image.open(snap_path) as img:
-                # If it's not a blank white page, crop and return
                 if not is_mostly_blank(img):
-                    # Crops out the top navbar, side margins, and bottom footer
-                    # Box: (left, upper, right, lower)
-                    cropped = img.crop((120, 110, 1160, 440))
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+
+                    # Keep left (0) and top (0), crop only the bottom footer
+                    cropped = img.crop((0, 0, 1280, 480))
                     buf = io.BytesIO()
                     cropped.save(buf, format="JPEG", quality=92)
                     data = buf.getvalue()
@@ -390,10 +386,10 @@ def take_desktop_screenshot(review_url: str) -> bytes:
     except Exception as e:
         print(f"⚠️ Local desktop Chromium capture failed: {e}")
 
-    # Fallback to high-speed desktop API with custom crop
+    # Fallback to high-speed desktop API without cropping top or left
     try:
         print("🌐 Trying desktop fallback API...")
-        fallback_url = f"https://image.thum.io/get/width/1280/crop/440/noanimate/{review_url}"
+        fallback_url = f"https://image.thum.io/get/width/1280/crop/480/noanimate/{review_url}"
         resp = requests.get(
             fallback_url,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
@@ -401,11 +397,11 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         )
         if resp.status_code == 200 and len(resp.content) > 3000:
             with Image.open(io.BytesIO(resp.content)) as fb_img:
-                # Convert RGBA to RGB to prevent JPEG save failure
                 if fb_img.mode in ("RGBA", "P"):
                     fb_img = fb_img.convert("RGB")
 
-                cropped_fb = fb_img.crop((120, 110, 1160, 440))
+                # Keep left (0) and top (0)
+                cropped_fb = fb_img.crop((0, 0, 1280, 480))
                 buf = io.BytesIO()
                 cropped_fb.save(buf, format="JPEG", quality=92)
                 return buf.getvalue()
