@@ -325,22 +325,23 @@ async def upload_worker(
                 pass
             await asyncio.sleep(1.5)
 
-
 # ==========================================
-# SCREENSHOT ENGINE (UPDATED CHROMIUM RESILIENT)
+# SCREENSHOT ENGINE (CLEAN & WORKING)
 # ==========================================
 def take_desktop_screenshot(review_url: str) -> bytes:
     snap_path = os.path.join(os.path.expanduser("~"), "temp_review_snap.png")
+    
+    # 1. Clear previous screenshot artifact
     if os.path.exists(snap_path):
         try:
             os.remove(snap_path)
         except Exception:
             pass
 
-    # Windows / Chromium headless command with real render wait
+    # 2. Chromium headless command
     cmd = [
-        "chromium-browser",  # On Windows without Termux, use "chrome" or full path to chrome.exe if available
-        "--headless=new",    # Uses modern Chrome headless mode which renders JS properly
+        "chromium-browser",
+        "--headless=new",
         "--disable-gpu",
         "--no-sandbox",
         "--single-process",
@@ -356,28 +357,29 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         f"--screenshot={snap_path}",
         review_url,
     ]
-    # Remove old screenshot if it exists
-    if os.path.exists(output_path):
-        os.remove(output_path)
 
+    # 3. Attempt local Chromium capture
     try:
-        # Give Chromium enough time to execute page JS
-        subprocess.run(cmd, timeout=60, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        if os.path.exists(snap_path) and os.path.getsize(snap_path) > 5000:
+        subprocess.run(
+            cmd,
+            timeout=45,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        if os.path.exists(snap_path) and os.path.getsize(snap_path) > 3000:
             with open(snap_path, "rb") as f:
                 data = f.read()
-            os.remove(snap_path)
+            try:
+                os.remove(snap_path)
+            except Exception:
+                pass
             return data
     except Exception as e:
-        print(f"⚠️ Local browser capture failed: {e}")
-        # Verify if the file was created and is non-empty
-    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
-        return output_path
-    
-    return None
+        print(f"⚠️ Local Chromium capture failed: {e}")
 
-    # Fallback: Microlink API with a 4-second wait for React hydration
+    # 4. Fallback: Microlink API (Runs if local Chromium fails or times out)
     try:
+        print("🌐 Attempting Microlink fallback...")
         encoded_url = quote_plus(review_url)
         api_endpoint = (
             f"https://api.microlink.io?url={encoded_url}"
@@ -385,8 +387,8 @@ def take_desktop_screenshot(review_url: str) -> bytes:
             "&viewport.width=1280&viewport.height=820&viewport.isMobile=false"
             "&waitForTimeout=4000"
         )
-        resp = requests.get(api_endpoint, timeout=20)
-        if resp.status_code == 200 and resp.content and len(resp.content) > 5000:
+        resp = requests.get(api_endpoint, timeout=25)
+        if resp.status_code == 200 and resp.content and len(resp.content) > 3000:
             return resp.content
     except Exception as e:
         print(f"⚠️ Microlink fallback error: {e}")
