@@ -323,54 +323,6 @@ def is_mostly_blank(img: Image.Image) -> bool:
         return False
 
 
-def render_desktop_review_card(review_data: dict, product_title: str = "") -> bytes:
-    width, height = 1280, 480
-    img = Image.new("RGB", (width, height), color="#F1F3F6")
-    draw = ImageDraw.Draw(img)
-
-    # Header Navbar
-    draw.rectangle([(0, 0), (width, 56)], fill="#2874F0")
-    draw.text((36, 16), "Flipkart", fill="#FFFFFF")
-    draw.text((115, 20), "Explore Plus", fill="#FFE500")
-
-    # Main Card Box
-    draw.rounded_rectangle([(30, 75), (width - 30, height - 30)], radius=4, fill="#FFFFFF", outline="#E0E0E0")
-
-    # Left: Product Title
-    prod_name = (product_title or review_data.get("product_title") or "Flipkart Product")[:45]
-    draw.text((55, 95), "Customer Review", fill="#212121")
-    draw.text((55, 125), prod_name, fill="#878787")
-    draw.line([(280, 95), (280, height - 50)], fill="#F0F0F0", width=1)
-
-    # Right: Rating Badge
-    rating_val = str(review_data.get("rating", "5.0")).strip()
-    badge_bg = "#388E3C" if float(rating_val if rating_val.replace('.', '', 1).isdigit() else 5) >= 3 else "#FF6161"
-    draw.rounded_rectangle([(310, 95), (370, 122)], radius=3, fill=badge_bg)
-    draw.text((320, 101), f"{rating_val} ★", fill="#FFFFFF")
-
-    # Title
-    title = (review_data.get("title") or "Verified Purchase").strip()
-    draw.text((385, 101), title[:65], fill="#212121")
-
-    # Review Body Lines
-    raw_text = (review_data.get("text") or "No detailed description provided.").strip()
-    wrapped_lines = textwrap.wrap(raw_text, width=80)
-    y_pos = 145
-    for line in wrapped_lines[:8]:
-        draw.text((310, y_pos), line, fill="#212121")
-        y_pos += 24
-
-    # Meta
-    author = review_data.get("author") or "Flipkart Customer"
-    date_str = review_data.get("date") or "Recent"
-    meta_y = max(y_pos + 18, height - 60)
-    meta_text = f"{author}   ✔ Certified Buyer   •   {date_str}"
-    draw.text((310, meta_y), meta_text, fill="#878787")
-
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=95)
-    return buf.getvalue()
-
 
 def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
     snap_path = os.path.join(os.path.expanduser("~"), "temp_review_snap.png")
@@ -380,76 +332,86 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
         except Exception:
             pass
 
-    cmd = [
-        "chromium-browser",
-        "--headless=new",
-        "--disable-gpu",
-        "--no-sandbox",
-        "--single-process",
-        "--log-level=3",
-        "--disable-dev-shm-usage",
-        "--window-size=1280,820",
-        "--hide-scrollbars",
-        "--enable-javascript",
-        "--virtual-time-budget=6000",
-        (
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        ),
-        f"--screenshot={snap_path}",
-        review_url,
-    ]
-
+    # 1. Primary: Remote Desktop Capture Engine with 4s React Wait Delay
+    # 'wait/4' gives Flipkart time to load the review before snapping
     try:
-        subprocess.run(cmd, timeout=35, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if os.path.exists(snap_path) and os.path.getsize(snap_path) > 3000:
-            with Image.open(snap_path) as img:
-                if not is_mostly_blank(img):
-                    if img.mode in ("RGBA", "P"):
-                        img = img.convert("RGB")
-                    # Crop (0, 0, 1280, 480) removes dark footer without cutting left/top
-                    cropped = img.crop((0, 0, 1280, 480))
-                    buf = io.BytesIO()
-                    cropped.save(buf, format="JPEG", quality=92)
-                    try:
-                        os.remove(snap_path)
-                    except Exception:
-                        pass
-                    return buf.getvalue()
-    except Exception as e:
-        print(f"⚠️ Local Chromium capture failed: {e}")
-
-    # Fallback to high-speed remote API
-    try:
-        fallback_url = f"https://image.thum.io/get/width/1280/crop/480/noanimate/{review_url}"
+        print("🌐 Capturing real desktop view (waiting 4s for render)...")
+        api_url = f"https://image.thum.io/get/wait/4/width/1280/crop/480/noanimate/{review_url}"
         resp = requests.get(
-            fallback_url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-            timeout=20,
+            api_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
+            timeout=30,
         )
-        if resp.status_code == 200 and len(resp.content) > 3000:
-            with Image.open(io.BytesIO(resp.content)) as fb_img:
-                if not is_mostly_blank(fb_img):
-                    if fb_img.mode in ("RGBA", "P"):
-                        fb_img = fb_img.convert("RGB")
-                    buf = io.BytesIO()
-                    fb_img.save(buf, format="JPEG", quality=92)
-                    return buf.getvalue()
+        if resp.status_code == 200 and len(resp.content) > 5000:
+            with Image.open(io.BytesIO(resp.content)) as img:
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                # Keeps top header & left thumbnail, removes bottom footer
+                cropped = img.crop((0, 0, 1280, 480))
+                buf = io.BytesIO()
+                cropped.save(buf, format="JPEG", quality=92)
+                return buf.getvalue()
     except Exception as e:
-        print(f"⚠️ Remote fallback failed: {e}")
+        print(f"⚠️ Primary desktop capture error: {e}")
 
-    # Guaranteed fallback: generate high-res card directly from DB
-    if review_id:
-        try:
-            with sqlite3.connect(DB_PATH) as conn:
-                conn.row_factory = sqlite3.Row
-                c = conn.cursor()
-                c.execute("SELECT * FROM reviews WHERE review_id = ?", (review_id,))
-                row = c.fetchone()
-                if row:
-                    return render_desktop_review_card(dict(row), row["product_title"])
-        except Exception as e:
-            print(f"⚠️ PIL card generator error: {e}")
+    # 2. Secondary Fallback: Microlink Desktop with 4000ms delay
+    try:
+        print("🌐 Trying secondary desktop engine...")
+        encoded = quote_plus(review_url)
+        ml_url = (
+            f"https://api.microlink.io?url={encoded}"
+            "&screenshot=true&meta=false&embed=screenshot.url"
+            "&viewport.width=1280&viewport.height=820&viewport.isMobile=false"
+            "&waitForTimeout=4000"
+        )
+        resp = requests.get(ml_url, timeout=25)
+        if resp.status_code == 200 and len(resp.content) > 5000:
+            with Image.open(io.BytesIO(resp.content)) as img:
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                cropped = img.crop((0, 0, 1280, 480))
+                buf = io.BytesIO()
+                cropped.save(buf, format="JPEG", quality=92)
+                return buf.getvalue()
+    except Exception as e:
+        print(f"⚠️ Secondary engine error: {e}")
+
+    # 3. Local Chromium Desktop (if available and responsive)
+    try:
+        cmd = [
+            "chromium-browser",
+            "--headless=new",
+            "--disable-gpu",
+            "--no-sandbox",
+            "--single-process",
+            "--log-level=3",
+            "--disable-dev-shm-usage",
+            "--window-size=1280,820",
+            "--hide-scrollbars",
+            "--enable-javascript",
+            "--virtual-time-budget=9000",
+            (
+                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            ),
+            f"--screenshot={snap_path}",
+            review_url,
+        ]
+        subprocess.run(cmd, timeout=35, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(snap_path) and os.path.getsize(snap_path) > 5000:
+            with Image.open(snap_path) as img:
+                if img.mode in ("RGBA", "P"):
+                    img = img.convert("RGB")
+                cropped = img.crop((0, 0, 1280, 480))
+                buf = io.BytesIO()
+                cropped.save(buf, format="JPEG", quality=92)
+                try:
+                    os.remove(snap_path)
+                except Exception:
+                    pass
+                return buf.getvalue()
+    except Exception as e:
+        print(f"⚠️ Local desktop fallback failed: {e}")
 
     return None
 
