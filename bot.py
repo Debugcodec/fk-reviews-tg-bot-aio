@@ -562,6 +562,8 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
             "--disable-gpu",
             "--no-sandbox",
             "--single-process",
+            "--allow-file-access-from-files",       # Allows loading local file:// HTML
+            "--enable-local-file-accesses",
             "--log-level=3",
             "--disable-dev-shm-usage",
             "--window-size=1280,480",
