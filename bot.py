@@ -319,6 +319,9 @@ async def upload_worker(
 # ==========================================
 # SCREENSHOT ENGINE (CLEAN & WORKING)
 # ==========================================
+import io
+from PIL import Image
+
 def take_desktop_screenshot(review_url: str) -> bytes:
     snap_path = os.path.join(os.path.expanduser("~"), "temp_review_snap.png")
     if os.path.exists(snap_path):
@@ -327,7 +330,6 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         except Exception:
             pass
 
-    # Desktop flags preserving 1280x820 viewport
     cmd = [
         "chromium-browser",
         "--headless=new",
@@ -339,7 +341,7 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         "--window-size=1280,820",
         "--hide-scrollbars",
         "--enable-javascript",
-        "--virtual-time-budget=6000",  # Waits 6s for desktop React elements to load
+        "--virtual-time-budget=6000",
         (
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -356,20 +358,27 @@ def take_desktop_screenshot(review_url: str) -> bytes:
             stderr=subprocess.DEVNULL,
         )
         if os.path.exists(snap_path) and os.path.getsize(snap_path) > 3000:
-            with open(snap_path, "rb") as f:
-                data = f.read()
+            # Crop to focus on the review and remove the dark footer
+            with Image.open(snap_path) as img:
+                # crop box: (left, upper, right, lower)
+                # Cuts off below 460px to remove the footer completely
+                cropped = img.crop((0, 0, 1280, 460))
+                output_buf = io.BytesIO()
+                cropped.save(output_buf, format="JPEG", quality=90)
+                cropped_data = output_buf.getvalue()
+            
             try:
                 os.remove(snap_path)
             except Exception:
                 pass
-            return data
+            return cropped_data
     except Exception as e:
         print(f"⚠️ Local desktop Chromium capture failed: {e}")
 
-    # Desktop Remote Fallback (1280x820)
+    # Fallback with desktop crop (1280x460)
     try:
         print("🌐 Trying desktop thum.io fallback...")
-        fallback_url = f"https://image.thum.io/get/width/1280/crop/820/noanimate/{review_url}"
+        fallback_url = f"https://image.thum.io/get/width/1280/crop/460/noanimate/{review_url}"
         resp = requests.get(
             fallback_url,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
@@ -381,7 +390,6 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         print(f"⚠️ Desktop fallback failed: {e}")
 
     return None
-
 
 def clean_location(loc_obj) -> str:
     if not loc_obj:
