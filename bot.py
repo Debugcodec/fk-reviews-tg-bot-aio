@@ -356,6 +356,9 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         f"--screenshot={snap_path}",
         review_url,
     ]
+    # Remove old screenshot if it exists
+    if os.path.exists(output_path):
+        os.remove(output_path)
 
     try:
         # Give Chromium enough time to execute page JS
