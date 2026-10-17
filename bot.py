@@ -1,11 +1,13 @@
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import html as html_lib
+import io
 import json
 import os
 import re
 import sqlite3
 import subprocess
+import textwrap
 import time
 from urllib.parse import parse_qs, quote_plus, urlencode, urlparse, urlunparse
 import uuid
@@ -13,7 +15,7 @@ import uuid
 from bs4 import BeautifulSoup
 from curl_cffi import requests
 from dotenv import load_dotenv
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont, ImageStat
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
@@ -69,9 +71,16 @@ def init_db():
                 date TEXT,
                 link TEXT,
                 sort_tag TEXT,
+                post_timestamp INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Ensure post_timestamp exists if updating an existing table
+        try:
+            cursor.execute("ALTER TABLE reviews ADD COLUMN post_timestamp INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_pid ON reviews(pid)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_author ON reviews(author COLLATE NOCASE)")
         conn.commit()
@@ -83,9 +92,9 @@ def save_reviews_to_db(pid: str, product_title: str, reviews: list, sort_tag: st
         for r in reviews:
             cursor.execute(
                 """
-                INSERT OR REPLACE INTO reviews
-                (review_id, pid, product_title, rating, title, text, author, location, date, link, sort_tag)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT OR REPLACE INTO reviews 
+                (review_id, pid, product_title, rating, title, text, author, location, date, link, sort_tag, post_timestamp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     r.get("reviewId"),
@@ -99,6 +108,7 @@ def save_reviews_to_db(pid: str, product_title: str, reviews: list, sort_tag: st
                     r.get("date"),
                     r.get("link"),
                     sort_tag,
+                    int(time.time()),
                 ),
             )
         conn.commit()
@@ -111,9 +121,9 @@ def get_cached_reviews(pid: str, page: int = 1, per_page: int = 5):
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT * FROM reviews
-            WHERE pid = ?
-            ORDER BY created_at DESC
+            SELECT * FROM reviews 
+            WHERE pid = ? 
+            ORDER BY created_at DESC 
             LIMIT ? OFFSET ?
             """,
             (pid, per_page, offset),
@@ -136,7 +146,7 @@ def search_author_in_db(pid: str, query_str: str):
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT * FROM reviews
+            SELECT * FROM reviews 
             WHERE pid = ? AND (author LIKE ? OR text LIKE ? OR title LIKE ?)
             ORDER BY created_at DESC
             """,
@@ -146,16 +156,16 @@ def search_author_in_db(pid: str, query_str: str):
 
 
 # ==========================================
-# RCLONE & DRIVE HELPERS
+# RCLONE & DRIVE HELPERS (OPTIMIZED SPEED)
 # ==========================================
 def fast_compress(input_path, target_kb):
     try:
         with Image.open(input_path) as img:
             if img.mode in ("RGBA", "P"):
                 img = img.convert("RGB")
-            if img.width > 1024:
-                img.thumbnail((1024, 1024), Image.Resampling.BILINEAR)
-            img.save(input_path, "JPEG", quality=50, optimize=False)
+            if img.width > 1280:
+                img.thumbnail((1280, 1280), Image.Resampling.BILINEAR)
+            img.save(input_path, "JPEG", quality=85, optimize=False)
     except Exception:
         pass
 
@@ -171,14 +181,13 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
     target_remote_dir = f"{REMOTE_NAME}:{REMOTE_FOLDER}"
 
     try:
-        # Write locally
         with open(temp_path, "wb") as f:
             f.write(image_bytes)
             f.flush()
 
         fast_compress(temp_path, 300)
 
-        # 1. Direct upload without oversized chunk buffers for small files
+        # Direct, fast upload with no-traverse
         proc = await asyncio.create_subprocess_exec(
             "rclone",
             "copyto",
@@ -186,11 +195,11 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
             target_remote_file,
             "--quiet",
             "--ignore-checksum",
-            "--no-traverse",           # Skips directory traversal for speed
+            "--no-traverse",
         )
         await proc.communicate()
 
-        # 2. Fetch File ID immediately (no 2-second pre-sleep)
+        # Direct file ID check without sleep delays
         ls_proc = await asyncio.create_subprocess_exec(
             "rclone",
             "lsf",
@@ -209,7 +218,7 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
             return f"https://drive.google.com/open?id={file_id}"
 
     except Exception as e:
-        print(f"❌ Error uploading/getting link: {e}")
+        print(f"❌ Error uploading to Drive: {e}")
     finally:
         if os.path.exists(temp_path):
             try:
@@ -241,7 +250,7 @@ async def upload_worker(
     )
     target_remote_file = f"{REMOTE_NAME}:{REMOTE_FOLDER}/{file_name}"
 
-    while True:
+    while attempt <= 3:
         try:
             if not os.path.exists(file_path):
                 raise Exception("Local file missing.")
@@ -253,14 +262,7 @@ async def upload_worker(
                 target_remote_file,
                 "--quiet",
                 "--ignore-checksum",
-                "--drive-chunk-size",
-                "64M",
-                "--transfers",
-                "8",
-                "--checkers",
-                "8",
-                "--buffer-size",
-                "32M",
+                "--no-traverse",
             )
             await asyncio.wait_for(move_proc.wait(), timeout=25)
 
@@ -305,31 +307,72 @@ async def upload_worker(
         except Exception as e:
             print(f"⚠️ Upload Attempt {attempt} failed: {str(e)}")
             attempt += 1
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=status_msg_id,
-                    text=f"🔄 <b>Uploading to Drive... (Retry {attempt})</b>",
-                    parse_mode=ParseMode.HTML,
-                )
-            except Exception:
-                pass
-            await asyncio.sleep(1.5)
+            await asyncio.sleep(1.0)
+
 
 # ==========================================
-# SCREENSHOT ENGINE (CLEAN & WORKING)
+# SCREENSHOT & CARD RENDERING ENGINE
 # ==========================================
-import io
-from PIL import Image, ImageStat
-
 def is_mostly_blank(img: Image.Image) -> bool:
-    """Checks if the captured review area is still an empty white skeleton."""
-    sample_box = (350, 150, 900, 350)
-    sample = img.crop(sample_box).convert("L")
-    stat = ImageStat.Stat(sample)
-    return stat.stddev[0] < 5.0
+    try:
+        sample_box = (350, 150, 900, 350)
+        sample = img.crop(sample_box).convert("L")
+        stat = ImageStat.Stat(sample)
+        return stat.stddev[0] < 5.0
+    except Exception:
+        return False
 
-def take_desktop_screenshot(review_url: str) -> bytes:
+
+def render_desktop_review_card(review_data: dict, product_title: str = "") -> bytes:
+    width, height = 1280, 480
+    img = Image.new("RGB", (width, height), color="#F1F3F6")
+    draw = ImageDraw.Draw(img)
+
+    # Header Navbar
+    draw.rectangle([(0, 0), (width, 56)], fill="#2874F0")
+    draw.text((36, 16), "Flipkart", fill="#FFFFFF")
+    draw.text((115, 20), "Explore Plus", fill="#FFE500")
+
+    # Main Card Box
+    draw.rounded_rectangle([(30, 75), (width - 30, height - 30)], radius=4, fill="#FFFFFF", outline="#E0E0E0")
+
+    # Left: Product Title
+    prod_name = (product_title or review_data.get("product_title") or "Flipkart Product")[:45]
+    draw.text((55, 95), "Customer Review", fill="#212121")
+    draw.text((55, 125), prod_name, fill="#878787")
+    draw.line([(280, 95), (280, height - 50)], fill="#F0F0F0", width=1)
+
+    # Right: Rating Badge
+    rating_val = str(review_data.get("rating", "5.0")).strip()
+    badge_bg = "#388E3C" if float(rating_val if rating_val.replace('.', '', 1).isdigit() else 5) >= 3 else "#FF6161"
+    draw.rounded_rectangle([(310, 95), (370, 122)], radius=3, fill=badge_bg)
+    draw.text((320, 101), f"{rating_val} ★", fill="#FFFFFF")
+
+    # Title
+    title = (review_data.get("title") or "Verified Purchase").strip()
+    draw.text((385, 101), title[:65], fill="#212121")
+
+    # Review Body Lines
+    raw_text = (review_data.get("text") or "No detailed description provided.").strip()
+    wrapped_lines = textwrap.wrap(raw_text, width=80)
+    y_pos = 145
+    for line in wrapped_lines[:8]:
+        draw.text((310, y_pos), line, fill="#212121")
+        y_pos += 24
+
+    # Meta
+    author = review_data.get("author") or "Flipkart Customer"
+    date_str = review_data.get("date") or "Recent"
+    meta_y = max(y_pos + 18, height - 60)
+    meta_text = f"{author}   ✔ Certified Buyer   •   {date_str}"
+    draw.text((310, meta_y), meta_text, fill="#878787")
+
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=95)
+    return buf.getvalue()
+
+
+def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
     snap_path = os.path.join(os.path.expanduser("~"), "temp_review_snap.png")
     if os.path.exists(snap_path):
         try:
@@ -348,7 +391,7 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         "--window-size=1280,820",
         "--hide-scrollbars",
         "--enable-javascript",
-        "--virtual-time-budget=8000",
+        "--virtual-time-budget=6000",
         (
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -358,57 +401,59 @@ def take_desktop_screenshot(review_url: str) -> bytes:
     ]
 
     try:
-        subprocess.run(
-            cmd,
-            timeout=45,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        subprocess.run(cmd, timeout=35, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(snap_path) and os.path.getsize(snap_path) > 3000:
             with Image.open(snap_path) as img:
                 if not is_mostly_blank(img):
                     if img.mode in ("RGBA", "P"):
                         img = img.convert("RGB")
-
-                    # Keep left (0) and top (0), crop only the bottom footer
+                    # Crop (0, 0, 1280, 480) removes dark footer without cutting left/top
                     cropped = img.crop((0, 0, 1280, 480))
                     buf = io.BytesIO()
                     cropped.save(buf, format="JPEG", quality=92)
-                    data = buf.getvalue()
-
                     try:
                         os.remove(snap_path)
                     except Exception:
                         pass
-                    return data
-                else:
-                    print("⚠️ Local render was blank, triggering fallback...")
+                    return buf.getvalue()
     except Exception as e:
-        print(f"⚠️ Local desktop Chromium capture failed: {e}")
+        print(f"⚠️ Local Chromium capture failed: {e}")
 
-    # Fallback to high-speed desktop API without cropping top or left
+    # Fallback to high-speed remote API
     try:
-        print("🌐 Trying desktop fallback API...")
         fallback_url = f"https://image.thum.io/get/width/1280/crop/480/noanimate/{review_url}"
         resp = requests.get(
             fallback_url,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-            timeout=25,
+            timeout=20,
         )
         if resp.status_code == 200 and len(resp.content) > 3000:
             with Image.open(io.BytesIO(resp.content)) as fb_img:
-                if fb_img.mode in ("RGBA", "P"):
-                    fb_img = fb_img.convert("RGB")
-
-                # Keep left (0) and top (0)
-                cropped_fb = fb_img.crop((0, 0, 1280, 480))
-                buf = io.BytesIO()
-                cropped_fb.save(buf, format="JPEG", quality=92)
-                return buf.getvalue()
+                if not is_mostly_blank(fb_img):
+                    if fb_img.mode in ("RGBA", "P"):
+                        fb_img = fb_img.convert("RGB")
+                    buf = io.BytesIO()
+                    fb_img.save(buf, format="JPEG", quality=92)
+                    return buf.getvalue()
     except Exception as e:
-        print(f"⚠️ Desktop fallback failed: {e}")
+        print(f"⚠️ Remote fallback failed: {e}")
+
+    # Guaranteed fallback: generate high-res card directly from DB
+    if review_id:
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+                c = conn.cursor()
+                c.execute("SELECT * FROM reviews WHERE review_id = ?", (review_id,))
+                row = c.fetchone()
+                if row:
+                    return render_desktop_review_card(dict(row), row["product_title"])
+        except Exception as e:
+            print(f"⚠️ PIL card generator error: {e}")
 
     return None
+
+
 def clean_location(loc_obj) -> str:
     if not loc_obj:
         return ""
@@ -534,8 +579,8 @@ def fetch_flipkart_reviews(
         title_elem = card.find("p", class_=re.compile(r"z9E0IG|_2-N8zT"))
         text_elem = card.find("div", class_=re.compile(r"ZmyHeo|_11XBLa|txt|row _3nLaff"))
         author_elem = card.find("p", class_=re.compile(r"_2NsDsF|_2sc7ZR"))
-
         date_elem = card.find("p", class_=re.compile(r"_3c7q|wX4Z|M4Vp|_2mcPpE|_2_R_DZ"))
+        
         post_date = ""
         if date_elem:
             post_date = clean_date_string(date_elem.get_text(strip=True))
@@ -561,19 +606,9 @@ def fetch_flipkart_reviews(
         seen_ids.add(r_id)
         reviews_found.append({
             "reviewId": r_id,
-            "rating": (
-                rating_elem.get_text(strip=True)
-                if rating_elem and rating_elem.get_text(strip=True)
-                else "5.0"
-            ),
-            "title": (
-                html_lib.unescape(title_elem.get_text(strip=True)) if title_elem else "Verified Review"
-            ),
-            "text": (
-                html_lib.unescape(text_elem.get_text(separator=" ", strip=True))
-                if text_elem
-                else "No Review Text"
-            ),
+            "rating": rating_elem.get_text(strip=True) if rating_elem else "5.0",
+            "title": html_lib.unescape(title_elem.get_text(strip=True)) if title_elem else "Verified Review",
+            "text": html_lib.unescape(text_elem.get_text(separator=" ", strip=True)) if text_elem else "No Review Text",
             "author": html_lib.unescape(author_str),
             "location": loc_str,
             "date": post_date,
@@ -597,7 +632,7 @@ def fetch_flipkart_reviews(
                         node.get("url")
                         or node.get("reviewUrl")
                         or f"/reviews/{pid}:1?reviewId={r_id}"
-                    )  
+                    )
                     full_permalink = (
                         f"https://www.flipkart.com{raw_url}" if not raw_url.startswith("http") else raw_url
                     )
@@ -927,7 +962,6 @@ async def handle_text_messages(update: Update, context: ContextTypes.DEFAULT_TYP
             )
             return
 
-        # Global links mapping
         global_links = context.bot_data.setdefault("review_links", {})
         for r in reviews:
             r_id = r.get("review_id") or r.get("reviewId")
@@ -967,14 +1001,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     print(f"\n👉 [BUTTON TAPPED] Received data: '{data}'")
 
-    # 1. Immediately acknowledge the click
+    # 1. Immediately acknowledge the click to stop Telegram timeouts
     try:
         await query.answer()
     except Exception as e:
-        print(f"⚠️ Query answer error: {e}")
+        print(f"⚠️ Query answer notice: {e}")
 
     # ==========================================
-    # 2. SCREENSHOT BUTTONS (snap_<review_id>)
+    # SCREENSHOT BUTTONS (snap_<review_id>)
     # ==========================================
     if data.startswith("snap_"):
         review_id = data.split("snap_", 1)[1]
@@ -995,16 +1029,16 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     review_url = row[0]
 
         if not review_url:
-            print(f"❌ Review ID {review_id} not found anywhere in memory or DB.")
+            print(f"❌ Review ID {review_id} not found.")
             await query.message.reply_text("❌ Review link not found. Tap '🔄 Sync Web' to reload.")
             return
 
         status_msg = await query.message.reply_text(
-            "📸 <i>Rendering snapshot via Chromium...</i>", parse_mode=ParseMode.HTML
+            "📸 <i>Rendering review snapshot...</i>", parse_mode=ParseMode.HTML
         )
 
         loop = asyncio.get_running_loop()
-        image_bytes = await loop.run_in_executor(None, take_desktop_screenshot, review_url)
+        image_bytes = await loop.run_in_executor(None, take_desktop_screenshot, review_url, review_id)
 
         try:
             await status_msg.delete()
@@ -1012,7 +1046,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
         if not image_bytes:
-            print("❌ Screenshot function returned None (Chromium or fallback failed)")
+            print("❌ Screenshot function failed to produce image")
             await query.message.reply_text("❌ Screenshot failed. Please check the review link directly.")
             return
 
@@ -1043,7 +1077,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ==========================================
-    # 3. SEARCH & SYNC BUTTONS
+    # SEARCH & SYNC BUTTONS
     # ==========================================
     if data.startswith("search_"):
         pid = data.split("search_", 1)[1]
@@ -1074,7 +1108,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         product_title = context.bot_data.get(f"title_{pid}", f"Product ({pid})")
         converted_info = context.bot_data.get(f"info_{pid}", "")
 
-        # Save to global bot_data
         global_links = context.bot_data.setdefault("review_links", {})
         for r in reviews:
             r_id = r.get("review_id") or r.get("reviewId")
@@ -1094,7 +1127,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     # ==========================================
-    # 4. FILTERS & PAGINATION (rev_<pid>_<page>_<sort>)
+    # FILTERS & PAGINATION (rev_<pid>_<page>_<sort>)
     # ==========================================
     if data.startswith("rev_"):
         try:
@@ -1141,7 +1174,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 parse_mode=ParseMode.HTML, disable_web_page_preview=True
             )
         except Exception as e:
-            print(f"❌ Edit message failed (likely HTML parsing or unchanged): {e}")
+            print(f"❌ Edit message failed: {e}")
 
 
 async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1172,15 +1205,6 @@ async def handle_media(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             print(f"⚠️ Telegram Download Attempt {dl_attempt} failed: {str(e)}")
             dl_attempt += 1
-            try:
-                await context.bot.edit_message_text(
-                    chat_id=update.message.chat_id,
-                    message_id=status_msg.message_id,
-                    text=f"🔄 <b>Retrying download from Telegram... ({dl_attempt})</b>",
-                    parse_mode=ParseMode.HTML,
-                )
-            except Exception:
-                pass
             await asyncio.sleep(1.5)
 
     try:
