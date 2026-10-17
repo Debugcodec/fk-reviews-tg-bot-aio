@@ -401,6 +401,10 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         )
         if resp.status_code == 200 and len(resp.content) > 3000:
             with Image.open(io.BytesIO(resp.content)) as fb_img:
+                # Convert RGBA to RGB to prevent JPEG save failure
+                if fb_img.mode in ("RGBA", "P"):
+                    fb_img = fb_img.convert("RGB")
+
                 cropped_fb = fb_img.crop((120, 110, 1160, 440))
                 buf = io.BytesIO()
                 cropped_fb.save(buf, format="JPEG", quality=92)
@@ -409,7 +413,6 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         print(f"⚠️ Desktop fallback failed: {e}")
 
     return None
-
 def clean_location(loc_obj) -> str:
     if not loc_obj:
         return ""
