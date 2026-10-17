@@ -330,15 +330,13 @@ async def upload_worker(
 # ==========================================
 def take_desktop_screenshot(review_url: str) -> bytes:
     snap_path = os.path.join(os.path.expanduser("~"), "temp_review_snap.png")
-    
-    # 1. Clear previous screenshot artifact
     if os.path.exists(snap_path):
         try:
             os.remove(snap_path)
         except Exception:
             pass
 
-    # 2. Chromium headless command
+    # 1. First try local Chromium
     cmd = [
         "chromium-browser",
         "--headless=new",
@@ -350,19 +348,15 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         "--window-size=1280,820",
         "--hide-scrollbars",
         "--enable-javascript",
-        (
-            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-        ),
+        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
         f"--screenshot={snap_path}",
         review_url,
     ]
 
-    # 3. Attempt local Chromium capture
     try:
         subprocess.run(
             cmd,
-            timeout=45,
+            timeout=35,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -375,23 +369,24 @@ def take_desktop_screenshot(review_url: str) -> bytes:
                 pass
             return data
     except Exception as e:
-        print(f"⚠️ Local Chromium capture failed: {e}")
+        print(f"⚠️ Local Chromium timed out or failed: {e}")
 
-    # 4. Fallback: Microlink API (Runs if local Chromium fails or times out)
+    # 2. Resilient Remote Fallback (thum.io)
     try:
-        print("🌐 Attempting Microlink fallback...")
-        encoded_url = quote_plus(review_url)
-        api_endpoint = (
-            f"https://api.microlink.io?url={encoded_url}"
-            "&screenshot=true&meta=false&embed=screenshot.url"
-            "&viewport.width=1280&viewport.height=820&viewport.isMobile=false"
-            "&waitForTimeout=4000"
+        print("🌐 Trying high-speed screenshot fallback...")
+        # thum.io generates a desktop render without blocking redirects:
+        fallback_url = f"https://image.thum.io/get/width/1280/crop/820/noanimate/{review_url}"
+        
+        # Using standard requests with desktop UA
+        resp = requests.get(
+            fallback_url,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
+            timeout=25
         )
-        resp = requests.get(api_endpoint, timeout=25)
-        if resp.status_code == 200 and resp.content and len(resp.content) > 3000:
+        if resp.status_code == 200 and len(resp.content) > 3000:
             return resp.content
     except Exception as e:
-        print(f"⚠️ Microlink fallback error: {e}")
+        print(f"⚠️ Remote fallback failed: {e}")
 
     return None
 
