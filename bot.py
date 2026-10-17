@@ -370,6 +370,11 @@ def take_desktop_screenshot(review_url: str) -> bytes:
             return data
     except Exception as e:
         print(f"⚠️ Local browser capture failed: {e}")
+        # Verify if the file was created and is non-empty
+    if os.path.exists(output_path) and os.path.getsize(output_path) > 1000:
+        return output_path
+    
+    return None
 
     # Fallback: Microlink API with a 4-second wait for React hydration
     try:
