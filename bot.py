@@ -163,7 +163,7 @@ def fast_compress(input_path, target_kb):
 async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -> str:
     if not filename:
         filename = f"review_{uuid.uuid4().hex[:10]}.jpg"
-    elif not filename.endswith(".jpg") and not filename.endswith(".png"):
+    elif not filename.endswith((".jpg", ".png")):
         filename = f"{filename}.jpg"
 
     temp_path = os.path.join(os.path.expanduser("~"), filename)
@@ -171,18 +171,14 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
     target_remote_dir = f"{REMOTE_NAME}:{REMOTE_FOLDER}"
 
     try:
-        # 1. Write file locally
+        # Write locally
         with open(temp_path, "wb") as f:
             f.write(image_bytes)
             f.flush()
-            os.fsync(f.fileno())
 
-        try:
-            fast_compress(temp_path, 300)
-        except Exception:
-            pass
+        fast_compress(temp_path, 300)
 
-        # 2. Upload file via rclone
+        # 1. Direct upload without oversized chunk buffers for small files
         proc = await asyncio.create_subprocess_exec(
             "rclone",
             "copyto",
@@ -190,31 +186,27 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
             target_remote_file,
             "--quiet",
             "--ignore-checksum",
-            "--drive-chunk-size",
-            "32M",
+            "--no-traverse",           # Skips directory traversal for speed
         )
         await proc.communicate()
 
-        # 3. Fetch exact File ID by filtering the parent folder
-        for attempt in range(5):
-            await asyncio.sleep(2)  # Wait for Google Drive index to register the file
-            ls_proc = await asyncio.create_subprocess_exec(
-                "rclone",
-                "lsf",
-                target_remote_dir,
-                "--include",
-                filename,
-                "--format",
-                "i",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            stdout, _ = await ls_proc.communicate()
-            file_id = stdout.decode().strip()
+        # 2. Fetch File ID immediately (no 2-second pre-sleep)
+        ls_proc = await asyncio.create_subprocess_exec(
+            "rclone",
+            "lsf",
+            target_remote_dir,
+            "--include",
+            filename,
+            "--format",
+            "i",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await ls_proc.communicate()
+        file_id = stdout.decode().strip()
 
-            # Verify it returned a valid Google Drive file ID
-            if file_id and len(file_id) > 15 and " " not in file_id:
-                return f"https://drive.google.com/open?id={file_id}"
+        if file_id and len(file_id) > 15 and " " not in file_id:
+            return f"https://drive.google.com/open?id={file_id}"
 
     except Exception as e:
         print(f"❌ Error uploading/getting link: {e}")
@@ -225,7 +217,6 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
             except Exception:
                 pass
 
-    # Fallback to folder only if file ID could not be fetched
     if REMOTE_FOLDER_ID:
         return f"https://drive.google.com/drive/folders/{REMOTE_FOLDER_ID}"
     return "https://drive.google.com"
@@ -336,7 +327,7 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         except Exception:
             pass
 
-    # 1. First try local Chromium
+    # Desktop flags preserving 1280x820 viewport
     cmd = [
         "chromium-browser",
         "--headless=new",
@@ -348,7 +339,11 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         "--window-size=1280,820",
         "--hide-scrollbars",
         "--enable-javascript",
-        "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "--virtual-time-budget=6000",  # Waits 6s for desktop React elements to load
+        (
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        ),
         f"--screenshot={snap_path}",
         review_url,
     ]
@@ -356,7 +351,7 @@ def take_desktop_screenshot(review_url: str) -> bytes:
     try:
         subprocess.run(
             cmd,
-            timeout=35,
+            timeout=40,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
@@ -369,24 +364,21 @@ def take_desktop_screenshot(review_url: str) -> bytes:
                 pass
             return data
     except Exception as e:
-        print(f"⚠️ Local Chromium timed out or failed: {e}")
+        print(f"⚠️ Local desktop Chromium capture failed: {e}")
 
-    # 2. Resilient Remote Fallback (thum.io)
+    # Desktop Remote Fallback (1280x820)
     try:
-        print("🌐 Trying high-speed screenshot fallback...")
-        # thum.io generates a desktop render without blocking redirects:
+        print("🌐 Trying desktop thum.io fallback...")
         fallback_url = f"https://image.thum.io/get/width/1280/crop/820/noanimate/{review_url}"
-        
-        # Using standard requests with desktop UA
         resp = requests.get(
             fallback_url,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-            timeout=25
+            timeout=25,
         )
         if resp.status_code == 200 and len(resp.content) > 3000:
             return resp.content
     except Exception as e:
-        print(f"⚠️ Remote fallback failed: {e}")
+        print(f"⚠️ Desktop fallback failed: {e}")
 
     return None
 
