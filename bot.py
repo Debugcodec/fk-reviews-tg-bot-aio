@@ -324,12 +324,20 @@ def is_mostly_blank(img: Image.Image) -> bool:
 
 
 
+import base64
+import urllib.parse
+
 def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
     temp_dir = os.path.expanduser("~")
-    html_path = os.path.join(temp_dir, "temp_review.html")
     snap_path = os.path.join(temp_dir, "temp_review_snap.png")
 
-    # 1. Fetch review data from local DB
+    if os.path.exists(snap_path):
+        try:
+            os.remove(snap_path)
+        except Exception:
+            pass
+
+    # 1. Fetch review data from SQLite DB
     review = None
     if review_id:
         with sqlite3.connect(DB_PATH) as conn:
@@ -341,10 +349,10 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
                 review = dict(row)
 
     if not review:
-        print(f"❌ Review {review_id} not found in DB.")
+        print(f"❌ Review ID '{review_id}' not found in SQLite DB.")
         return None
 
-    # 2. Prepare data fields
+    # 2. Extract Fields
     prod_title = html_lib.escape(review.get("product_title") or "Flipkart Product")
     rev_rating = html_lib.escape(str(review.get("rating") or "5.0"))
     rev_title = html_lib.escape(review.get("title") or "Verified Purchase")
@@ -352,17 +360,15 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
     author = html_lib.escape(review.get("author") or "Flipkart Customer")
     location = html_lib.escape(review.get("location") or "")
     post_date = html_lib.escape(review.get("date") or "Recent")
-
     loc_str = f", {location}" if location else ""
 
-    # Rating badge color (green for >=3, red for <3)
     try:
         is_pos = float(rev_rating) >= 3.0
     except ValueError:
         is_pos = True
     badge_color = "#388E3C" if is_pos else "#FF6161"
 
-    # 3. Authentic Flipkart Desktop HTML & CSS
+    # 3. Authentic Flipkart Desktop HTML
     html_content = f"""<!DOCTYPE html>
 <html>
 <head>
@@ -373,17 +379,16 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
         font-family: -apple-system, BlinkMacSystemFont, 'Roboto', 'Helvetica', 'Arial', sans-serif;
         background: #F1F3F6;
         width: 1280px;
-        min-height: 480px;
+        height: 460px;
         margin: 0;
         overflow: hidden;
     }}
-    /* Top Header Bar */
     .fk-header {{
         background: #2874F0;
         height: 56px;
         display: flex;
         align-items: center;
-        padding: 0 120px;
+        padding: 0 80px;
         gap: 16px;
     }}
     .fk-logo {{
@@ -412,7 +417,6 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
         font-size: 14px;
         margin-left: 20px;
     }}
-    /* Categories subnav */
     .fk-subnav {{
         background: #fff;
         height: 40px;
@@ -425,16 +429,15 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
         color: #212121;
         box-shadow: 0 1px 1px 0 rgba(0,0,0,.16);
     }}
-    /* Review Desktop Card Box */
     .content-wrap {{
-        max-width: 1200px;
+        max-width: 1180px;
         margin: 16px auto;
         background: #fff;
         border-radius: 2px;
         box-shadow: 0 1px 2px 0 rgba(0,0,0,.15);
         display: flex;
         padding: 24px;
-        min-height: 280px;
+        height: 310px;
     }}
     .product-col {{
         width: 280px;
@@ -483,7 +486,7 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
         line-height: 1.5;
         color: #212121;
         margin-bottom: 20px;
-        max-height: 140px;
+        max-height: 150px;
         overflow: hidden;
     }}
     .author-row {{
@@ -551,45 +554,40 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
 </body>
 </html>"""
 
+    # 4. Use base64 Data URL (Never blocked by Chromium file sandboxes)
+    b64_html = base64.b64encode(html_content.encode("utf-8")).decode("utf-8")
+    data_url = f"data:text/html;base64,{b64_html}"
+
+    cmd = [
+        "chromium-browser",
+        "--headless=new",
+        "--disable-gpu",
+        "--no-sandbox",
+        "--single-process",
+        "--log-level=3",
+        "--disable-dev-shm-usage",
+        "--window-size=1280,460",
+        "--hide-scrollbars",
+        f"--screenshot={snap_path}",
+        data_url,
+    ]
+
     try:
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-
-        # 4. Snap the local HTML using Chromium (instant, no network)
-        cmd = [
-            "chromium-browser",
-            "--headless=new",
-            "--disable-gpu",
-            "--no-sandbox",
-            "--single-process",
-            "--allow-file-access-from-files",       # Allows loading local file:// HTML
-            "--enable-local-file-accesses",
-            "--log-level=3",
-            "--disable-dev-shm-usage",
-            "--window-size=1280,480",
-            "--hide-scrollbars",
-            f"--screenshot={snap_path}",
-            f"file://{html_path}",
-        ]
-
-        subprocess.run(cmd, timeout=15, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-        if os.path.exists(snap_path) and os.path.getsize(snap_path) > 3000:
+        res = subprocess.run(cmd, timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(snap_path) and os.path.getsize(snap_path) > 1000:
             with open(snap_path, "rb") as f:
-                data = f.read()
-            return data
+                img_bytes = f.read()
+            try:
+                os.remove(snap_path)
+            except Exception:
+                pass
+            return img_bytes
+        else:
+            print(f"⚠️ Screenshot file missing or empty. Exit code: {res.returncode}")
     except Exception as e:
-        print(f"⚠️ Local desktop render error: {e}")
-    finally:
-        for p in [html_path, snap_path]:
-            if os.path.exists(p):
-                try:
-                    os.remove(p)
-                except Exception:
-                    pass
+        print(f"⚠️ Chromium execution error: {e}")
 
     return None
-
 
 def clean_location(loc_obj) -> str:
     if not loc_obj:
