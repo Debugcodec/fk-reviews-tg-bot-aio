@@ -325,59 +325,237 @@ def is_mostly_blank(img: Image.Image) -> bool:
 
 
 def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
-    snap_path = os.path.join(os.path.expanduser("~"), "temp_review_snap.png")
-    if os.path.exists(snap_path):
-        try:
-            os.remove(snap_path)
-        except Exception:
-            pass
+    temp_dir = os.path.expanduser("~")
+    html_path = os.path.join(temp_dir, "temp_review.html")
+    snap_path = os.path.join(temp_dir, "temp_review_snap.png")
 
-    # 1. Primary: Remote Desktop Capture Engine with 4s React Wait Delay
-    # 'wait/4' gives Flipkart time to load the review before snapping
-    try:
-        print("🌐 Capturing real desktop view (waiting 4s for render)...")
-        api_url = f"https://image.thum.io/get/wait/4/width/1280/crop/480/noanimate/{review_url}"
-        resp = requests.get(
-            api_url,
-            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"},
-            timeout=30,
-        )
-        if resp.status_code == 200 and len(resp.content) > 5000:
-            with Image.open(io.BytesIO(resp.content)) as img:
-                if img.mode in ("RGBA", "P"):
-                    img = img.convert("RGB")
-                # Keeps top header & left thumbnail, removes bottom footer
-                cropped = img.crop((0, 0, 1280, 480))
-                buf = io.BytesIO()
-                cropped.save(buf, format="JPEG", quality=92)
-                return buf.getvalue()
-    except Exception as e:
-        print(f"⚠️ Primary desktop capture error: {e}")
+    # 1. Fetch review data from local DB
+    review = None
+    if review_id:
+        with sqlite3.connect(DB_PATH) as conn:
+            conn.row_factory = sqlite3.Row
+            c = conn.cursor()
+            c.execute("SELECT * FROM reviews WHERE review_id = ?", (review_id,))
+            row = c.fetchone()
+            if row:
+                review = dict(row)
 
-    # 2. Secondary Fallback: Microlink Desktop with 4000ms delay
-    try:
-        print("🌐 Trying secondary desktop engine...")
-        encoded = quote_plus(review_url)
-        ml_url = (
-            f"https://api.microlink.io?url={encoded}"
-            "&screenshot=true&meta=false&embed=screenshot.url"
-            "&viewport.width=1280&viewport.height=820&viewport.isMobile=false"
-            "&waitForTimeout=4000"
-        )
-        resp = requests.get(ml_url, timeout=25)
-        if resp.status_code == 200 and len(resp.content) > 5000:
-            with Image.open(io.BytesIO(resp.content)) as img:
-                if img.mode in ("RGBA", "P"):
-                    img = img.convert("RGB")
-                cropped = img.crop((0, 0, 1280, 480))
-                buf = io.BytesIO()
-                cropped.save(buf, format="JPEG", quality=92)
-                return buf.getvalue()
-    except Exception as e:
-        print(f"⚠️ Secondary engine error: {e}")
+    if not review:
+        print(f"❌ Review {review_id} not found in DB.")
+        return None
 
-    # 3. Local Chromium Desktop (if available and responsive)
+    # 2. Prepare data fields
+    prod_title = html_lib.escape(review.get("product_title") or "Flipkart Product")
+    rev_rating = html_lib.escape(str(review.get("rating") or "5.0"))
+    rev_title = html_lib.escape(review.get("title") or "Verified Purchase")
+    rev_text = html_lib.escape(review.get("text") or "Great product, works as expected.")
+    author = html_lib.escape(review.get("author") or "Flipkart Customer")
+    location = html_lib.escape(review.get("location") or "")
+    post_date = html_lib.escape(review.get("date") or "Recent")
+
+    loc_str = f", {location}" if location else ""
+
+    # Rating badge color (green for >=3, red for <3)
     try:
+        is_pos = float(rev_rating) >= 3.0
+    except ValueError:
+        is_pos = True
+    badge_color = "#388E3C" if is_pos else "#FF6161"
+
+    # 3. Authentic Flipkart Desktop HTML & CSS
+    html_content = f"""<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    * {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+        font-family: -apple-system, BlinkMacSystemFont, 'Roboto', 'Helvetica', 'Arial', sans-serif;
+        background: #F1F3F6;
+        width: 1280px;
+        min-height: 480px;
+        margin: 0;
+        overflow: hidden;
+    }}
+    /* Top Header Bar */
+    .fk-header {{
+        background: #2874F0;
+        height: 56px;
+        display: flex;
+        align-items: center;
+        padding: 0 120px;
+        gap: 16px;
+    }}
+    .fk-logo {{
+        color: #fff;
+        font-weight: 700;
+        font-style: italic;
+        font-size: 20px;
+        letter-spacing: -0.5px;
+    }}
+    .fk-plus {{
+        color: #FFE500;
+        font-size: 11px;
+        font-style: italic;
+        font-weight: 600;
+        margin-top: -6px;
+    }}
+    .search-box {{
+        background: #fff;
+        height: 36px;
+        width: 480px;
+        border-radius: 2px;
+        display: flex;
+        align-items: center;
+        padding: 0 16px;
+        color: #878787;
+        font-size: 14px;
+        margin-left: 20px;
+    }}
+    /* Categories subnav */
+    .fk-subnav {{
+        background: #fff;
+        height: 40px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 32px;
+        font-size: 13px;
+        font-weight: 500;
+        color: #212121;
+        box-shadow: 0 1px 1px 0 rgba(0,0,0,.16);
+    }}
+    /* Review Desktop Card Box */
+    .content-wrap {{
+        max-width: 1200px;
+        margin: 16px auto;
+        background: #fff;
+        border-radius: 2px;
+        box-shadow: 0 1px 2px 0 rgba(0,0,0,.15);
+        display: flex;
+        padding: 24px;
+        min-height: 280px;
+    }}
+    .product-col {{
+        width: 280px;
+        padding-right: 24px;
+        border-right: 1px solid #f0f0f0;
+    }}
+    .prod-head {{
+        font-size: 18px;
+        font-weight: 600;
+        color: #212121;
+        margin-bottom: 12px;
+    }}
+    .prod-title {{
+        font-size: 14px;
+        color: #878787;
+        line-height: 1.4;
+    }}
+    .review-col {{
+        flex: 1;
+        padding-left: 24px;
+    }}
+    .rating-row {{
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 12px;
+    }}
+    .rating-badge {{
+        background: {badge_color};
+        color: #fff;
+        font-size: 14px;
+        font-weight: 600;
+        padding: 2px 8px;
+        border-radius: 3px;
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+    }}
+    .review-headline {{
+        font-size: 15px;
+        font-weight: 600;
+        color: #212121;
+    }}
+    .review-text {{
+        font-size: 14px;
+        line-height: 1.5;
+        color: #212121;
+        margin-bottom: 20px;
+        max-height: 140px;
+        overflow: hidden;
+    }}
+    .author-row {{
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12px;
+        color: #878787;
+    }}
+    .author-name {{
+        font-weight: 600;
+        color: #878787;
+    }}
+    .verified-tick {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 14px;
+        height: 14px;
+        background: #878787;
+        color: #fff;
+        border-radius: 50%;
+        font-size: 9px;
+        font-weight: bold;
+    }}
+</style>
+</head>
+<body>
+    <div class="fk-header">
+        <div>
+            <div class="fk-logo">Flipkart</div>
+            <div class="fk-plus">Explore Plus</div>
+        </div>
+        <div class="search-box">Search for products, brands and more</div>
+    </div>
+    <div class="fk-subnav">
+        <span>Electronics</span>
+        <span>TVs & Appliances</span>
+        <span>Men</span>
+        <span>Women</span>
+        <span>Baby & Kids</span>
+        <span>Home & Furniture</span>
+        <span>Sports, Books & More</span>
+    </div>
+    <div class="content-wrap">
+        <div class="product-col">
+            <div class="prod-head">Customer Review</div>
+            <div class="prod-title">{prod_title}</div>
+        </div>
+        <div class="review-col">
+            <div class="rating-row">
+                <span class="rating-badge">{rev_rating} ★</span>
+                <span class="review-headline">{rev_title}</span>
+            </div>
+            <div class="review-text">{rev_text}</div>
+            <div class="author-row">
+                <span class="author-name">{author}</span>
+                <span class="verified-tick">✓</span>
+                <span>Certified Buyer{loc_str}</span>
+                <span>•</span>
+                <span>{post_date}</span>
+            </div>
+        </div>
+    </div>
+</body>
+</html>"""
+
+    try:
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+
+        # 4. Snap the local HTML using Chromium (instant, no network)
         cmd = [
             "chromium-browser",
             "--headless=new",
@@ -386,32 +564,27 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
             "--single-process",
             "--log-level=3",
             "--disable-dev-shm-usage",
-            "--window-size=1280,820",
+            "--window-size=1280,480",
             "--hide-scrollbars",
-            "--enable-javascript",
-            "--virtual-time-budget=9000",
-            (
-                "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            ),
             f"--screenshot={snap_path}",
-            review_url,
+            f"file://{html_path}",
         ]
-        subprocess.run(cmd, timeout=35, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if os.path.exists(snap_path) and os.path.getsize(snap_path) > 5000:
-            with Image.open(snap_path) as img:
-                if img.mode in ("RGBA", "P"):
-                    img = img.convert("RGB")
-                cropped = img.crop((0, 0, 1280, 480))
-                buf = io.BytesIO()
-                cropped.save(buf, format="JPEG", quality=92)
+
+        subprocess.run(cmd, timeout=15, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        if os.path.exists(snap_path) and os.path.getsize(snap_path) > 3000:
+            with open(snap_path, "rb") as f:
+                data = f.read()
+            return data
+    except Exception as e:
+        print(f"⚠️ Local desktop render error: {e}")
+    finally:
+        for p in [html_path, snap_path]:
+            if os.path.exists(p):
                 try:
-                    os.remove(snap_path)
+                    os.remove(p)
                 except Exception:
                     pass
-                return buf.getvalue()
-    except Exception as e:
-        print(f"⚠️ Local desktop fallback failed: {e}")
 
     return None
 
