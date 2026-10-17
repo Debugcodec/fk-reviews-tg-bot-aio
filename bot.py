@@ -341,6 +341,21 @@ class FastMemoryServer(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # Silence server logs
 
+import io
+from PIL import Image, ImageStat
+
+def is_mostly_blank(img: Image.Image) -> bool:
+    """Detects if the middle review area is still an empty white skeleton."""
+    try:
+        # Sample the center where the review text should be
+        sample_box = (350, 150, 950, 400)
+        sample = img.crop(sample_box).convert("L")
+        stat = ImageStat.Stat(sample)
+        # If standard deviation is extremely low, it's a blank white box
+        return stat.stddev[0] < 6.0
+    except Exception:
+        return False
+
 def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
     snap_path = os.path.join(os.path.expanduser("~"), "temp_review_snap.png")
     if os.path.exists(snap_path):
@@ -349,7 +364,7 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
         except Exception:
             pass
 
-    # 1. Direct local Chromium web capture
+    # 1. Local Chromium with extended 12-second load budget
     cmd = [
         "chromium-browser",
         "--headless=new",
@@ -361,7 +376,7 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
         "--window-size=1280,820",
         "--hide-scrollbars",
         "--enable-javascript",
-        "--virtual-time-budget=6000",
+        "--virtual-time-budget=12000",  # Waits 12 seconds for full JS/AJAX hydration
         (
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -371,47 +386,55 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
     ]
 
     try:
+        print("📸 Capturing desktop review (waiting for page to load)...")
         subprocess.run(
             cmd,
-            timeout=35,
+            timeout=50,  # Allows Chromium enough time to finish the 12s budget
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         if os.path.exists(snap_path) and os.path.getsize(snap_path) > 3000:
             with Image.open(snap_path) as img:
-                if img.mode in ("RGBA", "P"):
-                    img = img.convert("RGB")
-                # Crop away footer: keep full width 1280 and top 480px
-                cropped = img.crop((0, 0, 1280, 480))
-                buf = io.BytesIO()
-                cropped.save(buf, format="JPEG", quality=92)
-                data = buf.getvalue()
+                if not is_mostly_blank(img):
+                    if img.mode in ("RGBA", "P"):
+                        img = img.convert("RGB")
+                    # Keeps the top bar and product image, crops off the bottom footer
+                    cropped = img.crop((0, 0, 1280, 480))
+                    buf = io.BytesIO()
+                    cropped.save(buf, format="JPEG", quality=92)
+                    data = buf.getvalue()
 
-            try:
-                os.remove(snap_path)
-            except Exception:
-                pass
-            return data
+                    try:
+                        os.remove(snap_path)
+                    except Exception:
+                        pass
+                    return data
+                else:
+                    print("⚠️ Local Chromium produced a blank view, trying fallback with 10s delay...")
     except Exception as e:
         print(f"⚠️ Local Chromium web capture error: {e}")
 
-    # 2. Remote Desktop Capture Fallback
+    # 2. Remote Desktop Capture with explicit 10-second wait
     try:
-        print("🌐 Attempting remote desktop capture...")
-        fallback_url = f"https://image.thum.io/get/width/1280/crop/480/noanimate/{review_url}"
+        print("🌐 Requesting remote capture with 10s render delay...")
+        # 'wait/10' instructs the remote browser to wait 10 seconds before capturing
+        fallback_url = f"https://image.thum.io/get/wait/10/width/1280/crop/480/noanimate/{review_url}"
         resp = requests.get(
             fallback_url,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
-            timeout=25,
+            timeout=35,
         )
         if resp.status_code == 200 and len(resp.content) > 3000:
             with Image.open(io.BytesIO(resp.content)) as fb_img:
-                if fb_img.mode in ("RGBA", "P"):
-                    fb_img = fb_img.convert("RGB")
-                cropped_fb = fb_img.crop((0, 0, 1280, 480))
-                buf = io.BytesIO()
-                cropped_fb.save(buf, format="JPEG", quality=92)
-                return buf.getvalue()
+                if not is_mostly_blank(fb_img):
+                    if fb_img.mode in ("RGBA", "P"):
+                        fb_img = fb_img.convert("RGB")
+                    cropped_fb = fb_img.crop((0, 0, 1280, 480))
+                    buf = io.BytesIO()
+                    cropped_fb.save(buf, format="JPEG", quality=92)
+                    return buf.getvalue()
+                else:
+                    print("⚠️ Fallback also returned blank page.")
     except Exception as e:
         print(f"⚠️ Remote fallback error: {e}")
 
