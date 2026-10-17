@@ -324,10 +324,25 @@ def is_mostly_blank(img: Image.Image) -> bool:
 
 
 
-import base64
-import urllib.parse
+import http.server
+import socketserver
+import threading
+
+# Global holder for review HTML
+CURRENT_HTML_PAYLOAD = ""
+
+class FastMemoryServer(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(CURRENT_HTML_PAYLOAD.encode("utf-8"))
+
+    def log_message(self, format, *args):
+        pass  # Silence server logs
 
 def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
+    global CURRENT_HTML_PAYLOAD
     temp_dir = os.path.expanduser("~")
     snap_path = os.path.join(temp_dir, "temp_review_snap.png")
 
@@ -337,7 +352,7 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
         except Exception:
             pass
 
-    # 1. Fetch review data from SQLite DB
+    # 1. Fetch review data
     review = None
     if review_id:
         with sqlite3.connect(DB_PATH) as conn:
@@ -352,7 +367,6 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
         print(f"❌ Review ID '{review_id}' not found in SQLite DB.")
         return None
 
-    # 2. Extract Fields
     prod_title = html_lib.escape(review.get("product_title") or "Flipkart Product")
     rev_rating = html_lib.escape(str(review.get("rating") or "5.0"))
     rev_title = html_lib.escape(review.get("title") or "Verified Purchase")
@@ -368,8 +382,8 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
         is_pos = True
     badge_color = "#388E3C" if is_pos else "#FF6161"
 
-    # 3. Authentic Flipkart Desktop HTML
-    html_content = f"""<!DOCTYPE html>
+    # 2. Template
+    CURRENT_HTML_PAYLOAD = f"""<!DOCTYPE html>
 <html>
 <head>
 <meta charset="utf-8">
@@ -554,9 +568,18 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
 </body>
 </html>"""
 
-    # 4. Use base64 Data URL (Never blocked by Chromium file sandboxes)
-    b64_html = base64.b64encode(html_content.encode("utf-8")).decode("utf-8")
-    data_url = f"data:text/html;base64,{b64_html}"
+    # 3. Spin up an ephemeral local server on an unused port (e.g., 9123)
+    server = None
+    try:
+        server = socketserver.TCPServer(("127.0.0.1", 9123), FastMemoryServer)
+        server_thread = threading.Thread(target=server.handle_request)
+        server_thread.daemon = True
+        server_thread.start()
+    except Exception:
+        pass
+
+    # 4. Short, safe URL that never triggers SIGTRAP (-5)
+    target_url = "http://127.0.0.1:9123/"
 
     cmd = [
         "chromium-browser",
@@ -569,11 +592,11 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
         "--window-size=1280,460",
         "--hide-scrollbars",
         f"--screenshot={snap_path}",
-        data_url,
+        target_url,
     ]
 
     try:
-        res = subprocess.run(cmd, timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(cmd, timeout=20, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         if os.path.exists(snap_path) and os.path.getsize(snap_path) > 1000:
             with open(snap_path, "rb") as f:
                 img_bytes = f.read()
@@ -582,13 +605,16 @@ def take_desktop_screenshot(review_url: str, review_id: str = "") -> bytes:
             except Exception:
                 pass
             return img_bytes
-        else:
-            print(f"⚠️ Screenshot file missing or empty. Exit code: {res.returncode}")
     except Exception as e:
-        print(f"⚠️ Chromium execution error: {e}")
+        print(f"⚠️ Local Chromium render error: {e}")
+    finally:
+        if server:
+            try:
+                server.server_close()
+            except Exception:
+                pass
 
     return None
-
 def clean_location(loc_obj) -> str:
     if not loc_obj:
         return ""
