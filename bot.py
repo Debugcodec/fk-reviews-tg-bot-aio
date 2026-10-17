@@ -343,6 +343,8 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         "--headless=new",    # Uses modern Chrome headless mode which renders JS properly
         "--disable-gpu",
         "--no-sandbox",
+        "--single-process",
+        "--log-level=3",
         "--disable-dev-shm-usage",
         "--window-size=1280,820",
         "--hide-scrollbars",
@@ -357,7 +359,7 @@ def take_desktop_screenshot(review_url: str) -> bytes:
 
     try:
         # Give Chromium enough time to execute page JS
-        subprocess.run(cmd, timeout=20, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        subprocess.run(cmd, timeout=60, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if os.path.exists(snap_path) and os.path.getsize(snap_path) > 5000:
             with open(snap_path, "rb") as f:
                 data = f.read()
