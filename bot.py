@@ -322,6 +322,18 @@ async def upload_worker(
 import io
 from PIL import Image
 
+import io
+from PIL import Image, ImageStat
+
+def is_mostly_blank(img: Image.Image) -> bool:
+    """Checks if the captured review area is still an empty white skeleton."""
+    # Sample the review body area (x: 350 to 900, y: 150 to 350)
+    sample_box = (350, 150, 900, 350)
+    sample = img.crop(sample_box).convert("L")
+    stat = ImageStat.Stat(sample)
+    # If standard deviation is extremely low, it's just a blank white box
+    return stat.stddev[0] < 5.0
+
 def take_desktop_screenshot(review_url: str) -> bytes:
     snap_path = os.path.join(os.path.expanduser("~"), "temp_review_snap.png")
     if os.path.exists(snap_path):
@@ -341,7 +353,7 @@ def take_desktop_screenshot(review_url: str) -> bytes:
         "--window-size=1280,820",
         "--hide-scrollbars",
         "--enable-javascript",
-        "--virtual-time-budget=6000",
+        "--virtual-time-budget=8000",  # Increased to 8s for cellular reliability
         (
             "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
@@ -353,39 +365,46 @@ def take_desktop_screenshot(review_url: str) -> bytes:
     try:
         subprocess.run(
             cmd,
-            timeout=40,
+            timeout=45,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
         if os.path.exists(snap_path) and os.path.getsize(snap_path) > 3000:
-            # Crop to focus on the review and remove the dark footer
             with Image.open(snap_path) as img:
-                # crop box: (left, upper, right, lower)
-                # Cuts off below 460px to remove the footer completely
-                cropped = img.crop((0, 0, 1280, 460))
-                output_buf = io.BytesIO()
-                cropped.save(output_buf, format="JPEG", quality=90)
-                cropped_data = output_buf.getvalue()
-            
-            try:
-                os.remove(snap_path)
-            except Exception:
-                pass
-            return cropped_data
+                # If it's not a blank white page, crop and return
+                if not is_mostly_blank(img):
+                    # Crops out the top navbar, side margins, and bottom footer
+                    # Box: (left, upper, right, lower)
+                    cropped = img.crop((120, 110, 1160, 440))
+                    buf = io.BytesIO()
+                    cropped.save(buf, format="JPEG", quality=92)
+                    data = buf.getvalue()
+
+                    try:
+                        os.remove(snap_path)
+                    except Exception:
+                        pass
+                    return data
+                else:
+                    print("⚠️ Local render was blank, triggering fallback...")
     except Exception as e:
         print(f"⚠️ Local desktop Chromium capture failed: {e}")
 
-    # Fallback with desktop crop (1280x460)
+    # Fallback to high-speed desktop API with custom crop
     try:
-        print("🌐 Trying desktop thum.io fallback...")
-        fallback_url = f"https://image.thum.io/get/width/1280/crop/460/noanimate/{review_url}"
+        print("🌐 Trying desktop fallback API...")
+        fallback_url = f"https://image.thum.io/get/width/1280/crop/440/noanimate/{review_url}"
         resp = requests.get(
             fallback_url,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
             timeout=25,
         )
         if resp.status_code == 200 and len(resp.content) > 3000:
-            return resp.content
+            with Image.open(io.BytesIO(resp.content)) as fb_img:
+                cropped_fb = fb_img.crop((120, 110, 1160, 440))
+                buf = io.BytesIO()
+                cropped_fb.save(buf, format="JPEG", quality=92)
+                return buf.getvalue()
     except Exception as e:
         print(f"⚠️ Desktop fallback failed: {e}")
 
