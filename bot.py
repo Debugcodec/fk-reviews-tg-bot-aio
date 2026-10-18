@@ -181,13 +181,14 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
     target_remote_dir = f"{REMOTE_NAME}:{REMOTE_FOLDER}"
 
     try:
+        # 1. Save locally and compress
         with open(temp_path, "wb") as f:
             f.write(image_bytes)
             f.flush()
 
         fast_compress(temp_path, 300)
 
-        # Direct, fast upload with no-traverse
+        # 2. Upload file via rclone
         proc = await asyncio.create_subprocess_exec(
             "rclone",
             "copyto",
@@ -199,26 +200,41 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
         )
         await proc.communicate()
 
-        # Direct file ID check without sleep delays
-        ls_proc = await asyncio.create_subprocess_exec(
+        # 3. Fetch exact File ID (retry with short pauses for Drive indexing)
+        for attempt in range(4):
+            await asyncio.sleep(1.5)  # Essential for Google Drive to register the file ID
+            ls_proc = await asyncio.create_subprocess_exec(
+                "rclone",
+                "lsf",
+                target_remote_dir,
+                "--include",
+                filename,
+                "--format",
+                "i",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _ = await ls_proc.communicate()
+            file_id = stdout.decode().strip()
+
+            if file_id and len(file_id) > 15 and " " not in file_id:
+                return f"https://drive.google.com/open?id={file_id}"
+
+        # 4. Fallback: Try rclone link directly on the file
+        link_proc = await asyncio.create_subprocess_exec(
             "rclone",
-            "lsf",
-            target_remote_dir,
-            "--include",
-            filename,
-            "--format",
-            "i",
+            "link",
+            target_remote_file,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
-        stdout, _ = await ls_proc.communicate()
-        file_id = stdout.decode().strip()
-
-        if file_id and len(file_id) > 15 and " " not in file_id:
-            return f"https://drive.google.com/open?id={file_id}"
+        stdout, _ = await link_proc.communicate()
+        direct_link = stdout.decode().strip()
+        if direct_link and direct_link.startswith("http"):
+            return direct_link
 
     except Exception as e:
-        print(f"❌ Error uploading to Drive: {e}")
+        print(f"❌ Error uploading/getting link: {e}")
     finally:
         if os.path.exists(temp_path):
             try:
@@ -226,6 +242,7 @@ async def upload_screenshot_to_drive(image_bytes: bytes, filename: str = None) -
             except Exception:
                 pass
 
+    # Only fall back to folder if all attempts to get the file ID fail
     if REMOTE_FOLDER_ID:
         return f"https://drive.google.com/drive/folders/{REMOTE_FOLDER_ID}"
     return "https://drive.google.com"
